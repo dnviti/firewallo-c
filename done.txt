@@ -2,4 +2,24 @@
 Firewallo — Completed Tasks
 ================================================================================
 
-(No tasks completed yet)
+
+------------------------------------------------------------------------------
+[x] CFG-0001 — Unified config read/write for CLI and web via shared JSON file
+------------------------------------------------------------------------------
+  Priority: HIGH
+  Dependencies: None
+  GitHub: #6
+  Release: None
+  COMPLETED: Added CLI config editing commands (set-interface, set-dns, set-range, set-sysctl, set-chain, set-nat, reload), fixed gitignore and tracked include headers and firewallo.json, added 38 new test assertions
+
+  DESCRIPTION:
+  Added full config editing CLI commands so that both the web interface
+  and the CLI can modify the same JSON config file. Includes reload
+  command for picking up changes made by the other interface.
+
+  Files involved:
+    MODIFY:  src/cli/commands.c
+    MODIFY:  src/cli/commands.h
+    MODIFY:  src/cli/main.c
+    MODIFY:  include/firewallo/config.h
+    MODIFY:  tests/test_config.c

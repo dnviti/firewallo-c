@@ -5,6 +5,7 @@
 #include "firewallo/log.h"
 #include "firewallo/i18n.h"
 #include "firewallo/json.h"
+#include "firewallo/validate.h"
 #include "firewallo/util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -328,6 +329,485 @@ int cmd_switch_backend(fw_config_t *cfg, const char *backend, const char *config
     printf("%s %s\n", _("backend_switched"),
            cfg->backend == BACKEND_NFT ? "nftables" : "iptables");
     return 0;
+}
+
+/* ── Helper: save config with validation ──────────────────────────── */
+
+static int validate_and_save(fw_config_t *cfg, const char *config_path)
+{
+    char err[256] = {0};
+    if (fw_config_validate(cfg, err, sizeof(err)) != 0) {
+        print_err("Validation failed:", err);
+        return 1;
+    }
+    if (fw_config_save(config_path, cfg) != 0) {
+        fprintf(stderr, "Error saving config to %s\n", config_path);
+        return 1;
+    }
+    return 0;
+}
+
+/* ── Helper: find interface in array, returns index or -1 ─────────── */
+
+static int find_if(char arr[][FW_MAX_IF_NAME], int count, const char *name)
+{
+    for (int i = 0; i < count; i++) {
+        if (strcmp(arr[i], name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* ── Helper: find string in address array, returns index or -1 ────── */
+
+static int find_addr(char arr[][FW_MAX_ADDR], int count, const char *val)
+{
+    for (int i = 0; i < count; i++) {
+        if (strcmp(arr[i], val) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* ── Helper: find int in array, returns index or -1 ───────────────── */
+
+static int find_int(const int arr[], int count, int val)
+{
+    for (int i = 0; i < count; i++) {
+        if (arr[i] == val)
+            return i;
+    }
+    return -1;
+}
+
+/* ── Helper: remove element from interface array ──────────────────── */
+
+static void remove_if(char arr[][FW_MAX_IF_NAME], int *count, int idx)
+{
+    for (int i = idx; i < *count - 1; i++)
+        fw_strlcpy(arr[i], arr[i + 1], FW_MAX_IF_NAME);
+    memset(arr[*count - 1], 0, FW_MAX_IF_NAME);
+    (*count)--;
+}
+
+/* ── Helper: remove element from address array ────────────────────── */
+
+static void remove_addr(char arr[][FW_MAX_ADDR], int *count, int idx)
+{
+    for (int i = idx; i < *count - 1; i++)
+        fw_strlcpy(arr[i], arr[i + 1], FW_MAX_ADDR);
+    memset(arr[*count - 1], 0, FW_MAX_ADDR);
+    (*count)--;
+}
+
+/* ── Helper: remove element from int array ────────────────────────── */
+
+static void remove_int(int arr[], int *count, int idx)
+{
+    for (int i = idx; i < *count - 1; i++)
+        arr[i] = arr[i + 1];
+    arr[*count - 1] = 0;
+    (*count)--;
+}
+
+/* ── Set interface ─────────────────────────────────────────────────── */
+
+int cmd_set_interface(fw_config_t *cfg, const char *zone, const char *action,
+                      const char *iface, const char *config_path)
+{
+    if (!fw_validate_interface(iface)) {
+        fprintf(stderr, "Invalid interface name: %s\n", iface);
+        return 1;
+    }
+
+    char (*arr)[FW_MAX_IF_NAME];
+    int *count;
+    int max = FW_MAX_INTERFACES;
+
+    if (strcmp(zone, "lan") == 0) {
+        arr = cfg->lan_ifs; count = &cfg->lan_if_count;
+    } else if (strcmp(zone, "wan") == 0) {
+        arr = cfg->wan_ifs; count = &cfg->wan_if_count;
+    } else if (strcmp(zone, "dmz") == 0) {
+        arr = cfg->dmz_ifs; count = &cfg->dmz_if_count;
+    } else if (strcmp(zone, "vpn") == 0) {
+        arr = cfg->vpn_ifs; count = &cfg->vpn_if_count;
+    } else {
+        fprintf(stderr, "Unknown zone: %s (use lan, wan, dmz, vpn)\n", zone);
+        return 1;
+    }
+
+    if (strcmp(action, "add") == 0) {
+        if (find_if(arr, *count, iface) >= 0) {
+            fprintf(stderr, "Interface %s already in %s\n", iface, zone);
+            return 1;
+        }
+        if (*count >= max) {
+            fprintf(stderr, "Maximum interfaces reached for %s\n", zone);
+            return 1;
+        }
+        fw_strlcpy(arr[*count], iface, FW_MAX_IF_NAME);
+        (*count)++;
+    } else if (strcmp(action, "remove") == 0) {
+        int idx = find_if(arr, *count, iface);
+        if (idx < 0) {
+            fprintf(stderr, "Interface %s not found in %s\n", iface, zone);
+            return 1;
+        }
+        remove_if(arr, count, idx);
+    } else {
+        fprintf(stderr, "Unknown action: %s (use add or remove)\n", action);
+        return 1;
+    }
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("Interface %s %sed %s %s\n", iface,
+           strcmp(action, "add") == 0 ? "add" : "remov", action[0] == 'a' ? "to" : "from", zone);
+    return 0;
+}
+
+/* ── Set DNS ───────────────────────────────────────────────────────── */
+
+int cmd_set_dns(fw_config_t *cfg, const char *action, const char *ip,
+                const char *config_path)
+{
+    if (!fw_validate_ipv4(ip)) {
+        fprintf(stderr, "Invalid IP address: %s\n", ip);
+        return 1;
+    }
+
+    if (strcmp(action, "add") == 0) {
+        if (find_addr(cfg->dns, cfg->dns_count, ip) >= 0) {
+            fprintf(stderr, "DNS server %s already configured\n", ip);
+            return 1;
+        }
+        if (cfg->dns_count >= FW_MAX_DNS) {
+            fprintf(stderr, "Maximum DNS servers reached\n");
+            return 1;
+        }
+        fw_strlcpy(cfg->dns[cfg->dns_count], ip, FW_MAX_ADDR);
+        cfg->dns_count++;
+    } else if (strcmp(action, "remove") == 0) {
+        int idx = find_addr(cfg->dns, cfg->dns_count, ip);
+        if (idx < 0) {
+            fprintf(stderr, "DNS server %s not found\n", ip);
+            return 1;
+        }
+        remove_addr(cfg->dns, &cfg->dns_count, idx);
+    } else {
+        fprintf(stderr, "Unknown action: %s (use add or remove)\n", action);
+        return 1;
+    }
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("DNS server %s %s\n", ip,
+           strcmp(action, "add") == 0 ? "added" : "removed");
+    return 0;
+}
+
+/* ── Set range ─────────────────────────────────────────────────────── */
+
+int cmd_set_range(fw_config_t *cfg, const char *zone, const char *action,
+                  const char *cidr, const char *config_path)
+{
+    if (!fw_validate_ipv4_cidr(cidr)) {
+        fprintf(stderr, "Invalid CIDR range: %s\n", cidr);
+        return 1;
+    }
+
+    char (*arr)[FW_MAX_ADDR];
+    int *count;
+    int max = FW_MAX_RANGES;
+
+    if (strcmp(zone, "lan") == 0) {
+        arr = cfg->lan_ranges; count = &cfg->lan_range_count;
+    } else if (strcmp(zone, "dmz") == 0) {
+        arr = cfg->dmz_ranges; count = &cfg->dmz_range_count;
+    } else {
+        fprintf(stderr, "Unknown zone: %s (use lan or dmz)\n", zone);
+        return 1;
+    }
+
+    if (strcmp(action, "add") == 0) {
+        if (find_addr(arr, *count, cidr) >= 0) {
+            fprintf(stderr, "Range %s already in %s\n", cidr, zone);
+            return 1;
+        }
+        if (*count >= max) {
+            fprintf(stderr, "Maximum ranges reached for %s\n", zone);
+            return 1;
+        }
+        fw_strlcpy(arr[*count], cidr, FW_MAX_ADDR);
+        (*count)++;
+    } else if (strcmp(action, "remove") == 0) {
+        int idx = find_addr(arr, *count, cidr);
+        if (idx < 0) {
+            fprintf(stderr, "Range %s not found in %s\n", cidr, zone);
+            return 1;
+        }
+        remove_addr(arr, count, idx);
+    } else {
+        fprintf(stderr, "Unknown action: %s (use add or remove)\n", action);
+        return 1;
+    }
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("Range %s %s %s\n", cidr,
+           strcmp(action, "add") == 0 ? "added to" : "removed from", zone);
+    return 0;
+}
+
+/* ── Set sysctl ────────────────────────────────────────────────────── */
+
+int cmd_set_sysctl(fw_config_t *cfg, const char *key, const char *value,
+                   const char *config_path)
+{
+    int val = atoi(value);
+    if (val != 0 && val != 1) {
+        fprintf(stderr, "Value must be 0 or 1\n");
+        return 1;
+    }
+
+    if (strcmp(key, "ip_forward") == 0)
+        cfg->ip_forward = val;
+    else if (strcmp(key, "ip_dynaddr") == 0)
+        cfg->ip_dynaddr = val;
+    else if (strcmp(key, "tcp_syncookies") == 0)
+        cfg->tcp_syncookies = val;
+    else if (strcmp(key, "accept_source_route") == 0)
+        cfg->accept_source_route = val;
+    else {
+        fprintf(stderr, "Unknown sysctl key: %s\n", key);
+        fprintf(stderr, "Valid keys: ip_forward, ip_dynaddr, tcp_syncookies, accept_source_route\n");
+        return 1;
+    }
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("sysctl %s = %d\n", key, val);
+    return 0;
+}
+
+/* ── Set chain ─────────────────────────────────────────────────────── */
+
+int cmd_set_chain(fw_config_t *cfg, const char *chain, const char *proto,
+                  const char *action, const char *port_str, const char *config_path)
+{
+    int idx = fw_config_chain_index(chain);
+    if (idx < 0) {
+        fprintf(stderr, "Unknown chain: %s\n", chain);
+        return 1;
+    }
+
+    int port = atoi(port_str);
+    if (!fw_validate_port(port)) {
+        fprintf(stderr, "Invalid port: %s (must be 1-65535)\n", port_str);
+        return 1;
+    }
+
+    int *ports;
+    int *count;
+    int max = FW_MAX_PORTS;
+
+    if (strcmp(proto, "tcp") == 0) {
+        ports = cfg->chains[idx].tcp_ports;
+        count = &cfg->chains[idx].tcp_port_count;
+    } else if (strcmp(proto, "udp") == 0) {
+        ports = cfg->chains[idx].udp_ports;
+        count = &cfg->chains[idx].udp_port_count;
+    } else {
+        fprintf(stderr, "Unknown protocol: %s (use tcp or udp)\n", proto);
+        return 1;
+    }
+
+    if (strcmp(action, "add") == 0) {
+        if (find_int(ports, *count, port) >= 0) {
+            fprintf(stderr, "Port %d already in %s %s\n", port, chain, proto);
+            return 1;
+        }
+        if (*count >= max) {
+            fprintf(stderr, "Maximum ports reached for %s %s\n", chain, proto);
+            return 1;
+        }
+        ports[*count] = port;
+        (*count)++;
+    } else if (strcmp(action, "remove") == 0) {
+        int pidx = find_int(ports, *count, port);
+        if (pidx < 0) {
+            fprintf(stderr, "Port %d not found in %s %s\n", port, chain, proto);
+            return 1;
+        }
+        remove_int(ports, count, pidx);
+    } else {
+        fprintf(stderr, "Unknown action: %s (use add or remove)\n", action);
+        return 1;
+    }
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("Port %d/%s %s %s\n", port, proto,
+           strcmp(action, "add") == 0 ? "added to" : "removed from", chain);
+    return 0;
+}
+
+/* ── Set NAT ───────────────────────────────────────────────────────── */
+
+int cmd_set_nat(fw_config_t *cfg, const char *direction, const char *action,
+                const char *rule_json, const char *config_path)
+{
+    int is_post = (strcmp(direction, "post") == 0);
+    int is_pre = (strcmp(direction, "pre") == 0);
+
+    if (!is_post && !is_pre) {
+        fprintf(stderr, "Unknown direction: %s (use post or pre)\n", direction);
+        return 1;
+    }
+
+    char parse_err[256] = {0};
+    json_value_t *root = json_parse(rule_json, parse_err, sizeof(parse_err));
+    if (!root) {
+        fprintf(stderr, "Invalid JSON: %s\n", parse_err);
+        return 1;
+    }
+    if (root->type != JSON_OBJECT) {
+        json_free(root);
+        fprintf(stderr, "NAT rule must be a JSON object\n");
+        return 1;
+    }
+
+    if (strcmp(action, "add") == 0) {
+        if (is_post) {
+            if (cfg->nat_post_count >= FW_MAX_NAT) {
+                json_free(root);
+                fprintf(stderr, "Maximum postrouting NAT rules reached\n");
+                return 1;
+            }
+            fw_nat_post_t *r = &cfg->nat_post[cfg->nat_post_count];
+            memset(r, 0, sizeof(*r));
+
+            const char *s;
+            s = json_string_value(json_object_get(root, "src"));
+            if (s) fw_strlcpy(r->src, s, sizeof(r->src));
+            s = json_string_value(json_object_get(root, "oif"));
+            if (s) fw_strlcpy(r->oif, s, sizeof(r->oif));
+            s = json_string_value(json_object_get(root, "type"));
+            if (s && strcmp(s, "snat") == 0)
+                r->type = NAT_SNAT;
+            else
+                r->type = NAT_MASQUERADE;
+            s = json_string_value(json_object_get(root, "to_source"));
+            if (s) fw_strlcpy(r->to_source, s, sizeof(r->to_source));
+            s = json_string_value(json_object_get(root, "comment"));
+            if (s) fw_strlcpy(r->comment, s, sizeof(r->comment));
+
+            cfg->nat_post_count++;
+        } else {
+            if (cfg->nat_pre_count >= FW_MAX_NAT) {
+                json_free(root);
+                fprintf(stderr, "Maximum prerouting NAT rules reached\n");
+                return 1;
+            }
+            fw_nat_pre_t *r = &cfg->nat_pre[cfg->nat_pre_count];
+            memset(r, 0, sizeof(*r));
+
+            const char *s;
+            s = json_string_value(json_object_get(root, "src"));
+            if (s) fw_strlcpy(r->src, s, sizeof(r->src));
+            s = json_string_value(json_object_get(root, "iif"));
+            if (s) fw_strlcpy(r->iif, s, sizeof(r->iif));
+            s = json_string_value(json_object_get(root, "protocol"));
+            if (s && strcmp(s, "udp") == 0)
+                r->protocol = PROTO_UDP;
+            else
+                r->protocol = PROTO_TCP;
+
+            json_value_t *dp = json_object_get(root, "dport");
+            if (dp && dp->type == JSON_NUMBER)
+                r->dport = (int)json_number_value(dp);
+
+            s = json_string_value(json_object_get(root, "to_dest_ip"));
+            if (s) fw_strlcpy(r->to_dest_ip, s, sizeof(r->to_dest_ip));
+
+            json_value_t *tdp = json_object_get(root, "to_dest_port");
+            if (tdp && tdp->type == JSON_NUMBER)
+                r->to_dest_port = (int)json_number_value(tdp);
+
+            s = json_string_value(json_object_get(root, "comment"));
+            if (s) fw_strlcpy(r->comment, s, sizeof(r->comment));
+
+            cfg->nat_pre_count++;
+        }
+    } else if (strcmp(action, "remove") == 0) {
+        json_value_t *idx_val = json_object_get(root, "index");
+        if (!idx_val || idx_val->type != JSON_NUMBER) {
+            json_free(root);
+            fprintf(stderr, "Remove requires {\"index\": N} in JSON\n");
+            return 1;
+        }
+        int rm_idx = (int)json_number_value(idx_val);
+
+        if (is_post) {
+            if (rm_idx < 0 || rm_idx >= cfg->nat_post_count) {
+                json_free(root);
+                fprintf(stderr, "NAT postrouting index %d out of range (0-%d)\n",
+                        rm_idx, cfg->nat_post_count - 1);
+                return 1;
+            }
+            for (int i = rm_idx; i < cfg->nat_post_count - 1; i++)
+                cfg->nat_post[i] = cfg->nat_post[i + 1];
+            cfg->nat_post_count--;
+        } else {
+            if (rm_idx < 0 || rm_idx >= cfg->nat_pre_count) {
+                json_free(root);
+                fprintf(stderr, "NAT prerouting index %d out of range (0-%d)\n",
+                        rm_idx, cfg->nat_pre_count - 1);
+                return 1;
+            }
+            for (int i = rm_idx; i < cfg->nat_pre_count - 1; i++)
+                cfg->nat_pre[i] = cfg->nat_pre[i + 1];
+            cfg->nat_pre_count--;
+        }
+    } else {
+        json_free(root);
+        fprintf(stderr, "Unknown action: %s (use add or remove)\n", action);
+        return 1;
+    }
+
+    json_free(root);
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("NAT %srouting rule %s\n", direction,
+           strcmp(action, "add") == 0 ? "added" : "removed");
+    return 0;
+}
+
+/* ── Reload ────────────────────────────────────────────────────────── */
+
+int cmd_reload(fw_config_t *cfg, const char *config_path, int verbose)
+{
+    printf("Reloading configuration...\n");
+
+    int ret = cmd_stop(cfg, verbose);
+    if (ret != 0)
+        return ret;
+
+    char err[256] = {0};
+    if (fw_config_load(config_path, cfg, err, sizeof(err)) != 0) {
+        print_err(_("error_load"), err);
+        return 1;
+    }
+
+    return cmd_start(cfg, verbose);
 }
 
 /* ── Version ───────────────────────────────────────────────────────── */

@@ -6,8 +6,8 @@ build/
 *.dylib
 
 # Binaries
-firewallo
-firewallo-web
+/firewallo
+/firewallo-web
 test_*
 !tests/test_*.c
 
@@ -32,4 +32,4 @@ Thumbs.db
 # Debian packaging
 *.deb
 *.changes
-*.buildinfo
+*.buildinfo.worktrees/

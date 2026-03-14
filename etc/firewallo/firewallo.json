@@ -1,0 +1,166 @@
+{
+  "version": "2.0.0",
+  "language": "en",
+  "backend": "nft",
+  "interfaces": {
+    "lan": ["ens18", "eth0", "ens21"],
+    "wan": ["ens19", "eth1"],
+    "dmz": ["ens20", "eth2"],
+    "vpn": ["tun0", "tun1", "ipsec0", "wg0"]
+  },
+  "dns_servers": ["8.8.8.8", "192.168.69.1", "212.216.112.112", "151.99.125.1"],
+  "ranges": {
+    "lan": ["10.50.50.0/24", "10.81.81.0/24"],
+    "dmz": ["10.40.40.0/24"]
+  },
+  "sysctl": {
+    "ip_forward": true,
+    "ip_dynaddr": true,
+    "tcp_syncookies": true,
+    "accept_source_route": false
+  },
+  "filter": {
+    "fw2fw": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "fw2lan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "fw2wan": {
+      "tcp_ports": [21, 25, 53, 80, 443],
+      "udp_ports": [53],
+      "rules": []
+    },
+    "fw2dmz": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "fw2vpns": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "lan2fw": {
+      "tcp_ports": [22],
+      "udp_ports": [],
+      "rules": []
+    },
+    "lan2lan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "lan2wan": {
+      "tcp_ports": [20, 21, 22, 23, 25, 80, 110, 443, 995, 143],
+      "udp_ports": [123],
+      "rules": []
+    },
+    "lan2dmz": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "lan2vpns": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "wan2fw": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "wan2lan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "wan2wan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "wan2dmz": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "wan2vpns": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "dmz2fw": {
+      "tcp_ports": [22],
+      "udp_ports": [],
+      "rules": []
+    },
+    "dmz2lan": {
+      "tcp_ports": [80, 443],
+      "udp_ports": [],
+      "rules": []
+    },
+    "dmz2wan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "dmz2dmz": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "dmz2vpns": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "vpns2fw": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "vpns2lan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "vpns2wan": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "vpns2dmz": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    },
+    "vpns2vpns": {
+      "tcp_ports": [],
+      "udp_ports": [],
+      "rules": []
+    }
+  },
+  "nat": {
+    "postrouting": [],
+    "prerouting": []
+  },
+  "mangle": {
+    "prerouting": [],
+    "postrouting": []
+  },
+  "routes": [],
+  "dpi": {
+    "enabled": false,
+    "rules": []
+  },
+  "suricata": {
+    "enabled": false,
+    "blocked_protocols": []
+  }
+}

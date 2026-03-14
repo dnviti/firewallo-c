@@ -1,5 +1,6 @@
 #include "firewallo/config.h"
 #include "firewallo/json.h"
+#include "firewallo/validate.h"
 #include "firewallo/util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,6 +208,258 @@ static void test_save_and_reload(void)
     remove(tmpfile);
 }
 
+static void test_set_interface(void)
+{
+    printf("test_set_interface\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for set-interface");
+
+    const char *tmpfile = "/tmp/firewallo_test_setif.json";
+
+    /* Add interface */
+    ASSERT(cfg.lan_if_count == 1, "starts with 1 LAN");
+    fw_strlcpy(cfg.lan_ifs[cfg.lan_if_count], "eth2", FW_MAX_IF_NAME);
+    cfg.lan_if_count++;
+    ASSERT(cfg.lan_if_count == 2, "now 2 LAN");
+    ASSERT(strcmp(cfg.lan_ifs[1], "eth2") == 0, "eth2 added");
+
+    /* Save and reload */
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save after add iface");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload after add iface");
+    ASSERT(cfg2.lan_if_count == 2, "reloaded 2 LAN");
+    ASSERT(strcmp(cfg2.lan_ifs[1], "eth2") == 0, "reloaded eth2");
+
+    /* Remove interface (shift) */
+    for (int i = 0; i < cfg2.lan_if_count - 1; i++)
+        fw_strlcpy(cfg2.lan_ifs[i], cfg2.lan_ifs[i + 1], FW_MAX_IF_NAME);
+    cfg2.lan_if_count--;
+    ASSERT(cfg2.lan_if_count == 1, "back to 1 LAN after remove");
+    ASSERT(strcmp(cfg2.lan_ifs[0], "eth2") == 0, "eth2 is now first");
+
+    remove(tmpfile);
+}
+
+static void test_set_dns(void)
+{
+    printf("test_set_dns\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for set-dns");
+
+    const char *tmpfile = "/tmp/firewallo_test_setdns.json";
+
+    /* Add DNS */
+    ASSERT(cfg.dns_count == 1, "starts with 1 DNS");
+    fw_strlcpy(cfg.dns[cfg.dns_count], "1.1.1.1", FW_MAX_ADDR);
+    cfg.dns_count++;
+    ASSERT(cfg.dns_count == 2, "now 2 DNS");
+
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save after add dns");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload after add dns");
+    ASSERT(cfg2.dns_count == 2, "reloaded 2 DNS");
+    ASSERT(strcmp(cfg2.dns[1], "1.1.1.1") == 0, "reloaded 1.1.1.1");
+
+    /* Remove DNS (first entry) */
+    for (int i = 0; i < cfg2.dns_count - 1; i++)
+        fw_strlcpy(cfg2.dns[i], cfg2.dns[i + 1], FW_MAX_ADDR);
+    cfg2.dns_count--;
+    ASSERT(cfg2.dns_count == 1, "back to 1 DNS");
+    ASSERT(strcmp(cfg2.dns[0], "1.1.1.1") == 0, "1.1.1.1 is now first");
+
+    remove(tmpfile);
+}
+
+static void test_set_range(void)
+{
+    printf("test_set_range\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for set-range");
+
+    const char *tmpfile = "/tmp/firewallo_test_setrange.json";
+
+    ASSERT(cfg.lan_range_count == 1, "starts with 1 LAN range");
+    fw_strlcpy(cfg.lan_ranges[cfg.lan_range_count], "10.0.0.0/8", FW_MAX_ADDR);
+    cfg.lan_range_count++;
+
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save after add range");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload after add range");
+    ASSERT(cfg2.lan_range_count == 2, "reloaded 2 LAN ranges");
+    ASSERT(strcmp(cfg2.lan_ranges[1], "10.0.0.0/8") == 0, "reloaded 10.0.0.0/8");
+
+    remove(tmpfile);
+}
+
+static void test_set_sysctl(void)
+{
+    printf("test_set_sysctl\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for set-sysctl");
+
+    const char *tmpfile = "/tmp/firewallo_test_setsysctl.json";
+
+    ASSERT(cfg.ip_forward == 1, "ip_forward starts on");
+    cfg.ip_forward = 0;
+
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save after sysctl change");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload after sysctl change");
+    ASSERT(cfg2.ip_forward == 0, "ip_forward is now off");
+
+    remove(tmpfile);
+}
+
+static void test_set_chain_ports(void)
+{
+    printf("test_set_chain_ports\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for set-chain");
+
+    const char *tmpfile = "/tmp/firewallo_test_setchain.json";
+
+    int idx = fw_config_chain_index("fw2wan");
+    ASSERT(idx >= 0, "fw2wan found");
+    int orig_tcp = cfg.chains[idx].tcp_port_count;
+
+    /* Add port 8080 */
+    cfg.chains[idx].tcp_ports[cfg.chains[idx].tcp_port_count] = 8080;
+    cfg.chains[idx].tcp_port_count++;
+    ASSERT(cfg.chains[idx].tcp_port_count == orig_tcp + 1, "tcp count +1");
+
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save after add port");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload after add port");
+    ASSERT(cfg2.chains[idx].tcp_port_count == orig_tcp + 1, "reloaded tcp count");
+    ASSERT(cfg2.chains[idx].tcp_ports[orig_tcp] == 8080, "reloaded port 8080");
+
+    /* Remove port 8080 (last element) */
+    cfg2.chains[idx].tcp_port_count--;
+    ASSERT(cfg2.chains[idx].tcp_port_count == orig_tcp, "back to original count");
+
+    ret = fw_config_save(tmpfile, &cfg2);
+    ASSERT(ret == 0, "save after remove port");
+
+    fw_config_t cfg3;
+    ret = fw_config_load(tmpfile, &cfg3, err, sizeof(err));
+    ASSERT(ret == 0, "reload after remove port");
+    ASSERT(cfg3.chains[idx].tcp_port_count == orig_tcp, "final tcp count matches");
+
+    remove(tmpfile);
+}
+
+static void test_set_nat(void)
+{
+    printf("test_set_nat\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for set-nat");
+
+    const char *tmpfile = "/tmp/firewallo_test_setnat.json";
+
+    int orig_post = cfg.nat_post_count;
+
+    /* Add postrouting NAT rule */
+    fw_nat_post_t *r = &cfg.nat_post[cfg.nat_post_count];
+    memset(r, 0, sizeof(*r));
+    fw_strlcpy(r->src, "192.168.1.0/24", sizeof(r->src));
+    fw_strlcpy(r->oif, "eth1", sizeof(r->oif));
+    r->type = NAT_MASQUERADE;
+    fw_strlcpy(r->comment, "test masq", sizeof(r->comment));
+    cfg.nat_post_count++;
+
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save after add nat");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload after add nat");
+    ASSERT(cfg2.nat_post_count == orig_post + 1, "nat_post_count +1");
+    ASSERT(strcmp(cfg2.nat_post[orig_post].src, "192.168.1.0/24") == 0, "nat src matches");
+    ASSERT(strcmp(cfg2.nat_post[orig_post].oif, "eth1") == 0, "nat oif matches");
+
+    /* Remove it */
+    cfg2.nat_post_count--;
+    ret = fw_config_save(tmpfile, &cfg2);
+    ASSERT(ret == 0, "save after remove nat");
+
+    fw_config_t cfg3;
+    ret = fw_config_load(tmpfile, &cfg3, err, sizeof(err));
+    ASSERT(ret == 0, "reload after remove nat");
+    ASSERT(cfg3.nat_post_count == orig_post, "nat_post_count back to original");
+
+    remove(tmpfile);
+}
+
+static void test_config_roundtrip_full(void)
+{
+    printf("test_config_roundtrip_full\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("etc/firewallo/firewallo.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load full config");
+
+    const char *tmpfile = "/tmp/firewallo_test_roundtrip.json";
+
+    /* Modify multiple sections */
+    fw_strlcpy(cfg.lan_ifs[cfg.lan_if_count], "br0", FW_MAX_IF_NAME);
+    cfg.lan_if_count++;
+    fw_strlcpy(cfg.dns[cfg.dns_count], "9.9.9.9", FW_MAX_ADDR);
+    cfg.dns_count++;
+    cfg.tcp_syncookies = 0;
+
+    int idx = fw_config_chain_index("lan2wan");
+    cfg.chains[idx].tcp_ports[cfg.chains[idx].tcp_port_count] = 9090;
+    cfg.chains[idx].tcp_port_count++;
+
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == 0, "modified config validates");
+
+    ret = fw_config_save(tmpfile, &cfg);
+    ASSERT(ret == 0, "save modified full config");
+
+    fw_config_t cfg2;
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload modified full config");
+
+    ASSERT(cfg2.lan_if_count == cfg.lan_if_count, "lan_if_count matches");
+    ASSERT(strcmp(cfg2.lan_ifs[cfg2.lan_if_count - 1], "br0") == 0, "br0 persisted");
+    ASSERT(cfg2.dns_count == cfg.dns_count, "dns_count matches");
+    ASSERT(strcmp(cfg2.dns[cfg2.dns_count - 1], "9.9.9.9") == 0, "9.9.9.9 persisted");
+    ASSERT(cfg2.tcp_syncookies == 0, "tcp_syncookies persisted as 0");
+    ASSERT(cfg2.chains[idx].tcp_ports[cfg2.chains[idx].tcp_port_count - 1] == 9090,
+           "port 9090 persisted");
+
+    remove(tmpfile);
+}
+
 int main(void)
 {
     printf("=== Config Tests ===\n\n");
@@ -218,6 +471,13 @@ int main(void)
     test_load_full();
     test_validate();
     test_save_and_reload();
+    test_set_interface();
+    test_set_dns();
+    test_set_range();
+    test_set_sysctl();
+    test_set_chain_ports();
+    test_set_nat();
+    test_config_roundtrip_full();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

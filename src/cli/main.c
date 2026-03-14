@@ -17,6 +17,7 @@ static void print_usage(void)
         "  start           Start the firewall\n"
         "  stop            Stop the firewall (flush rules, keep NAT)\n"
         "  restart         Stop then start\n"
+        "  reload          Re-read config from disk and reapply rules\n"
         "  reset           Flush all rules, set accept policy\n"
         "  status          Show firewall status\n"
         "  rules           Display active ruleset\n"
@@ -26,6 +27,14 @@ static void print_usage(void)
         "  restore <file>  Restore configuration from backup\n"
         "  switch <nft|ipt> Switch backend between nftables and iptables\n"
         "  version         Show version\n"
+        "\n"
+        "Config editing:\n"
+        "  set-interface <zone> <add|remove> <iface>\n"
+        "  set-dns <add|remove> <ip>\n"
+        "  set-range <zone> <add|remove> <cidr>\n"
+        "  set-sysctl <key> <0|1>\n"
+        "  set-chain <chain> <tcp|udp> <add|remove> <port>\n"
+        "  set-nat <post|pre> <add|remove> <rule-json>\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>  Config file (default: /etc/firewallo/firewallo.json)\n"
@@ -94,7 +103,8 @@ int main(int argc, char *argv[])
     /* Check root for commands that need it */
     if (geteuid() != 0 && !dry_run) {
         if (strcmp(command, "start") == 0 || strcmp(command, "stop") == 0 ||
-            strcmp(command, "restart") == 0 || strcmp(command, "reset") == 0) {
+            strcmp(command, "restart") == 0 || strcmp(command, "reset") == 0 ||
+            strcmp(command, "reload") == 0) {
             fprintf(stderr, "%s\n", _("error_root"));
             return 1;
         }
@@ -150,6 +160,48 @@ int main(int argc, char *argv[])
             return 1;
         }
         ret = cmd_switch_backend(&cfg, argv[optind + 1], config_path);
+    } else if (strcmp(command, "reload") == 0)
+        ret = cmd_reload(&cfg, config_path, verbose);
+    else if (strcmp(command, "set-interface") == 0) {
+        if (optind + 3 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-interface <zone> <add|remove> <iface>\n");
+            return 1;
+        }
+        ret = cmd_set_interface(&cfg, argv[optind + 1], argv[optind + 2],
+                                argv[optind + 3], config_path);
+    } else if (strcmp(command, "set-dns") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-dns <add|remove> <ip>\n");
+            return 1;
+        }
+        ret = cmd_set_dns(&cfg, argv[optind + 1], argv[optind + 2], config_path);
+    } else if (strcmp(command, "set-range") == 0) {
+        if (optind + 3 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-range <zone> <add|remove> <cidr>\n");
+            return 1;
+        }
+        ret = cmd_set_range(&cfg, argv[optind + 1], argv[optind + 2],
+                            argv[optind + 3], config_path);
+    } else if (strcmp(command, "set-sysctl") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-sysctl <key> <0|1>\n");
+            return 1;
+        }
+        ret = cmd_set_sysctl(&cfg, argv[optind + 1], argv[optind + 2], config_path);
+    } else if (strcmp(command, "set-chain") == 0) {
+        if (optind + 4 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-chain <chain> <tcp|udp> <add|remove> <port>\n");
+            return 1;
+        }
+        ret = cmd_set_chain(&cfg, argv[optind + 1], argv[optind + 2],
+                            argv[optind + 3], argv[optind + 4], config_path);
+    } else if (strcmp(command, "set-nat") == 0) {
+        if (optind + 3 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-nat <post|pre> <add|remove> <rule-json>\n");
+            return 1;
+        }
+        ret = cmd_set_nat(&cfg, argv[optind + 1], argv[optind + 2],
+                          argv[optind + 3], config_path);
     } else if (strcmp(command, "version") == 0)
         ret = cmd_version(&cfg);
     else {
