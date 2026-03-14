@@ -1,0 +1,21 @@
+#!/bin/bash
+set -e
+
+# Reload systemd
+systemctl daemon-reload
+
+# Enable services (don't start automatically - user should configure first)
+systemctl enable firewallo.service 2>/dev/null || true
+
+echo "Firewallo installed successfully."
+echo ""
+echo "Quick start:"
+echo "  1. Edit /etc/firewallo/firewallo.json"
+echo "  2. firewallo validate"
+echo "  3. firewallo start"
+echo ""
+echo "Web interface:"
+echo "  systemctl start firewallo-web"
+echo "  Open http://localhost:8080"
+
+exit 0

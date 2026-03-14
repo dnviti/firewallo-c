@@ -1,0 +1,106 @@
+================================================================================
+Firewallo — Idea Backlog
+================================================================================
+
+------------------------------------------------------------------------------
+IDEA-0001 — Automatic rollback timer for safe rule application
+------------------------------------------------------------------------------
+  Category: Safety / Operations
+  Date: 2026-03-14
+
+  DESCRIPTION:
+  Add an automatic rollback mechanism when applying firewall rules. After
+  applying a new configuration, start a configurable countdown (e.g. 60
+  seconds). If the user does not confirm the rules are working within that
+  window, automatically revert to the previous configuration. This is
+  especially critical for remote administration over SSH.
+
+  MOTIVATION:
+  One of the most common fears when managing firewalls remotely is getting
+  locked out after applying bad rules. OPNsense/pfSense have this feature
+  and it's frequently requested in Linux firewall forums. This would be a
+  major differentiator for firewallo among lightweight tools.
+
+
+------------------------------------------------------------------------------
+IDEA-0002 — Rate limiting and dynamic brute-force protection
+------------------------------------------------------------------------------
+  Category: Security / Filtering
+  Date: 2026-03-14
+
+  DESCRIPTION:
+  Expose nftables dynamic sets with automatic timeouts through the
+  firewallo configuration. Allow users to define per-chain connection rate
+  limits (e.g. "max 3 new SSH connections per minute") and auto-ban
+  offending IPs for a configurable duration. This leverages native nftables
+  meters and dynamic sets, requiring no external dependencies like fail2ban.
+
+  MOTIVATION:
+  Brute-force SSH protection is a top concern for exposed servers. nftables
+  supports this natively via dynamic sets with timeouts, but configuring it
+  manually is error-prone. Wrapping it in firewallo's JSON config would
+  make it accessible. Multiple blog posts and HN threads highlight this as
+  a replacement for fail2ban on modern nftables systems.
+
+
+------------------------------------------------------------------------------
+IDEA-0003 — Rule hit counters and traffic statistics in web UI
+------------------------------------------------------------------------------
+  Category: Monitoring / Web UI
+  Date: 2026-03-14
+
+  DESCRIPTION:
+  Parse nftables counter output (bytes/packets per rule) and display rule
+  hit statistics in the web dashboard. Show which chains and rules are
+  actively matching traffic, with per-chain and per-rule counters. Add a
+  new API endpoint to expose this data and a dashboard widget showing top
+  active rules and zero-hit rules that may be candidates for cleanup.
+
+  MOTIVATION:
+  Rule hit counters are standard in OPNsense/pfSense but absent from most
+  lightweight Linux firewall tools. Understanding which rules actually
+  match traffic is essential for debugging, optimization, and security
+  auditing. nftables already tracks counters — firewallo just needs to
+  expose them.
+
+
+------------------------------------------------------------------------------
+IDEA-0004 — GeoIP-based country blocking
+------------------------------------------------------------------------------
+  Category: Security / Filtering
+  Date: 2026-03-14
+
+  DESCRIPTION:
+  Allow users to block or allow traffic based on source/destination country.
+  Download country-specific IP ranges from public databases (e.g. RIPE,
+  MaxMind GeoLite2) and load them into nftables named sets. Provide a
+  configuration section to specify allowed/blocked countries per zone pair,
+  with a periodic update mechanism for the IP databases.
+
+  MOTIVATION:
+  GeoIP filtering is a trending feature in the nftables ecosystem, with
+  projects like nft-geo-filter showing strong community interest. It's a
+  standard feature in enterprise firewalls (OPNsense, pfSense) but rare in
+  lightweight tools. For many use cases (blocking known-malicious regions,
+  compliance restrictions), it provides a simple first line of defense.
+
+
+------------------------------------------------------------------------------
+IDEA-0005 — Configuration backup/restore API with versioned snapshots
+------------------------------------------------------------------------------
+  Category: Operations / API
+  Date: 2026-03-14
+
+  DESCRIPTION:
+  Extend the REST API with endpoints for configuration backup and restore.
+  Maintain a versioned history of configuration snapshots with timestamps
+  and optional change descriptions. Provide API endpoints to list snapshots,
+  create a snapshot, restore a specific version, and diff two versions. Add
+  a corresponding section in the web UI to browse and manage config history.
+
+  MOTIVATION:
+  The CLI already supports export/restore, but this capability is missing
+  from the web API. Configuration versioning with diff capabilities enables
+  audit trails and safe experimentation. This is a standard feature in
+  OPNsense/pfSense and would close a significant gap in firewallo's web
+  management experience.

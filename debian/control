@@ -1,0 +1,14 @@
+Package: firewallo
+Version: 2.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.34), iptables, nftables
+Recommends: suricata
+Maintainer: Matteo Fioriti <fioritim@gmail.com>
+Homepage: https://github.com/un1x80/firewallo
+Description: Firewall manager for Debian GNU/Linux
+ Firewallo is a zone-based firewall manager for Debian GNU/Linux
+ supporting both iptables and nftables backends. It provides a CLI
+ tool, a REST API, and a web interface for managing firewall rules,
+ NAT, mangle, DPI, and VPN configurations.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Firewallo Web Interface
+After=network.target firewallo.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/firewallo-web --port 8080 --webroot /usr/local/share/firewallo/web --config /etc/firewallo/firewallo.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

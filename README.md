@@ -1,90 +1,174 @@
-# 🔥🛡️ Firewallo
+# Firewallo
 
-**Firewallo** is a firewall manager for Debian GNU/Linux that uses either iptables or nftables.
-This project was originally created in 2003 for personal use and is not intended for production environments.
-Firewallo currently supports IPv4 only — for best practices, it is recommended to disable IPv6 on your system.
-Dual-stack (IPv4/IPv6) support is currently under development.
-The entire core structure has been rewritten to support nftables, following a design similar to the traditional iptables approach (using filter, nat, and mangle tables).
-Future development will focus exclusively on nftables.
+**Firewallo** is a zone-based firewall manager for Debian GNU/Linux supporting both **nftables** and **iptables** backends.
 
----
+Written in pure C with no external dependencies — only the standard C library and POSIX APIs. Includes a CLI tool, a REST API, and a web interface.
 
-## ✅ Supported OS
+## Features
 
-- Debian 12
+- **Zone-based architecture** — 5 zones (FW, LAN, WAN, DMZ, VPN) with 25 inter-zone filter chains
+- **Dual backend** — nftables (primary) and iptables (legacy), switchable at runtime
+- **Single JSON config** — one file to backup/restore the entire firewall configuration
+- **REST API** — full control under `/api/v1/` (config, rules, NAT, lifecycle)
+- **Web interface** — vanilla HTML/JS/CSS dashboard with dark theme
+- **CLI tool** — `firewallo start|stop|restart|reset|status|validate|export|restore`
+- **NAT** — MASQUERADE, SNAT, DNAT
+- **Security** — TCP flag detection, stateful tracking, DNS restriction, ICMP filtering
+- **DPI** — Suricata integration for deep packet inspection
+- **WireGuard** — VPN interface support
+- **i18n** — English and Italian
+- **No external libraries** — pure C17 + POSIX
 
----
+## Supported OS
 
-## 🛠️ Presets and architecture decisions 
-📌 Firewallo currently supports only IPv4 by design. For best practices, it is recommended to disable IPv6 on your system.
-All chains are defined using the ip family instead of inet.
-This decision was made to avoid ambiguous rules: in nftables, if a user writes a generic rule without explicitly specifying ip or ip6, it would apply to both stacks.
-Restricting support to IPv4 ensures clear rule behavior and maintains continuity with iptables, which has historically been used in Firewallo and is inherently single-stack (requiring ip6tables for IPv6).
-Dual-stack support (inet) may be considered in the future, but for now, IPv4 is the only supported protocol family.
+- Debian 12+
 
-📌All DNS traffic (tcp/udp port 53) is allowed only to the root servers and to the DNS servers explicitly defined in the configuration file.
-Any other DNS requests to unspecified servers are blocked by default.
+## Architecture
 
-📌The following ports are allowed from LAN to WAN:
+Firewallo currently supports **IPv4 only** by design (`ip` family in nftables, not `inet`). All DNS traffic is restricted to configured servers and root servers. Default policy is DROP on all chains.
 
-    TCP: 20, 21, 22, 23, 25, 80, 110, 143, 443, 995
+**Default open ports (LAN to WAN):**
+- TCP: 20, 21, 22, 23, 25, 80, 110, 143, 443, 995
+- UDP: 123
 
-    UDP: 123
+All LAN ranges are automatically NATed (masquerade) to WAN interfaces. DMZ ranges are excluded from masquerade.
 
-All other traffic between zones is blocked by default.
+## Quick Start
 
-📌All subnets listed in LANRANGE are automatically subject to NAT masquerading via the interfaces defined in WAN.
-In contrast, subnets defined in DMZRANGE are excluded from masquerading by default.
-
-📌restart performs a stop followed by a start operation.
-stop flushes all rules but keeps NAT rules active.
-reset only flushes the ruleset without reapplying or modifying anything else.
-
----
-
-## 🎇 Install
-
-Download the latest version from [Releases · un1x80/firewallo · GitHub](https://github.com/un1x80/firewallo/releases).
+### Build from source
 
 ```bash
-wget https://github.com/un1x80/firewallo/releases/download/current/firewallo-24.9.1.10-amd64.deb
-apt install ./firewallo-24.9.1.10-amd64.deb -y
+git clone https://github.com/un1x80/firewallo.git
+cd firewallo
+make
 ```
 
----
+This produces two binaries in `build/`:
+- `firewallo` — CLI tool
+- `firewallo-web` — HTTP server with REST API and web frontend
 
-## 🔐 Basic Usage
+### Install
 
-Execute **Firewallo** from a root shell and select an option from the configuration menu. Here is how the interface looks:
-
-### Main Menu
-
-![Firewallo Main Menu](./usr/share/doc/firewallo/firewallo_main_menu.png)
-
-### Starting Firewall
-
-![Firewallo Start](./usr/share/doc/firewallo/firewallo_starting.png)
-
----
-
-## 🛠️ Build
-
-### Local Build
 ```bash
-git clone -b <main|test> https://github.com/un1x80/firewallo.git
-cd firewallo/usr/share/doc/firewallo/ ; ./build.sh local 
+sudo make install
 ```
 
-### GIT Build (Test or Main)
+Or build a `.deb` package:
+
 ```bash
-wget https://raw.githubusercontent.com/un1x80/firewallo/main/usr/share/doc/firewallo/build.sh
-chmod +x build.sh ; ./build.sh git <main|test>
+sudo ./debian/build-deb.sh
+sudo apt install ./firewallo_2.0.0_amd64.deb
 ```
 
----
+### Configure
 
-## 💣 Uninstall
+Edit `/etc/firewallo/firewallo.json` — the single configuration file containing all interfaces, DNS servers, filter chains, NAT rules, and more.
+
+### Usage
 
 ```bash
-apt autoremove firewallo -y
+# Validate your config
+firewallo validate
+
+# Dry-run (show commands without executing)
+firewallo -n start
+
+# Start the firewall (requires root)
+sudo firewallo start
+
+# View status
+firewallo -c /path/to/firewallo.json status
+
+# Stop / restart / reset
+sudo firewallo stop
+sudo firewallo restart
+sudo firewallo reset
+
+# Export / restore config backup
+firewallo export
+firewallo restore firewallo-backup-20260101-120000.json
+
+# Switch backend
+firewallo switch nft
+firewallo switch ipt
+
+# Start web interface
+firewallo-web --port 8080 --webroot /usr/local/share/firewallo/web --config /etc/firewallo/firewallo.json
+```
+
+### Systemd
+
+```bash
+sudo systemctl enable firewallo
+sudo systemctl start firewallo
+
+sudo systemctl enable firewallo-web
+sudo systemctl start firewallo-web
+# Open http://localhost:8080
+```
+
+## REST API
+
+All endpoints under `/api/v1/`. Responses use `{"error": false, "data": ...}` envelope.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/version` | Version and backend info |
+| GET/PUT | `/api/v1/config` | Full configuration |
+| GET | `/api/v1/config/interfaces` | Interface assignments |
+| GET | `/api/v1/config/dns` | DNS servers |
+| GET/PUT | `/api/v1/config/backend` | Backend (nft/ipt) |
+| GET | `/api/v1/filter` | All 25 chains overview |
+| GET | `/api/v1/filter/{chain}` | Chain detail |
+| POST | `/api/v1/filter/{chain}/tcp` | Add TCP port `{"port": 80}` |
+| DELETE | `/api/v1/filter/{chain}/tcp/{port}` | Remove TCP port |
+| POST | `/api/v1/filter/{chain}/udp` | Add UDP port |
+| DELETE | `/api/v1/filter/{chain}/udp/{port}` | Remove UDP port |
+| GET | `/api/v1/nat` | NAT rules |
+| POST | `/api/v1/firewall/start` | Start firewall |
+| POST | `/api/v1/firewall/stop` | Stop firewall |
+| POST | `/api/v1/firewall/restart` | Restart firewall |
+| POST | `/api/v1/firewall/reset` | Reset firewall |
+| GET | `/api/v1/firewall/status` | Status (active/inactive) |
+| GET | `/api/v1/firewall/rules` | Active ruleset |
+| GET | `/api/v1/validate` | Validate config |
+
+## Project Structure
+
+```
+firewallo/
+├── src/lib/         # Core library (JSON parser, config, rule compiler, backends)
+├── src/cli/         # CLI binary
+├── src/web/         # HTTP server binary
+├── include/         # Public headers
+├── web/             # Frontend (HTML/CSS/JS)
+├── etc/firewallo/   # Default config (firewallo.json)
+├── tests/           # Test suite
+├── systemd/         # Service files
+├── debian/          # .deb packaging
+├── legacy/          # Original bash scripts (reference)
+└── Makefile
+```
+
+## Development
+
+```bash
+# Build with debug symbols + AddressSanitizer
+make debug
+
+# Run tests (344 tests across 4 suites)
+make test
+
+# Clean build artifacts
+make clean
+```
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
+
+## Uninstall
+
+```bash
+sudo apt autoremove firewallo -y
 ```

@@ -1,0 +1,35 @@
+# Build output
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Binaries
+firewallo
+firewallo-web
+test_*
+!tests/test_*.c
+
+# Debug
+*.dSYM/
+core
+vgcore.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+tags
+TAGS
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debian packaging
+*.deb
+*.changes
+*.buildinfo

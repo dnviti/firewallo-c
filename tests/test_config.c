@@ -1,0 +1,224 @@
+#include "firewallo/config.h"
+#include "firewallo/json.h"
+#include "firewallo/util.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int tests_run = 0;
+static int tests_passed = 0;
+
+#define ASSERT(cond, msg) do { \
+    tests_run++; \
+    if (!(cond)) { \
+        printf("  FAIL: %s (line %d)\n", msg, __LINE__); \
+    } else { \
+        tests_passed++; \
+    } \
+} while(0)
+
+static void test_chain_index(void)
+{
+    printf("test_chain_index\n");
+    ASSERT(fw_config_chain_index("fw2fw") == 0, "fw2fw is 0");
+    ASSERT(fw_config_chain_index("lan2wan") == 7, "lan2wan is 7");
+    ASSERT(fw_config_chain_index("vpns2vpns") == 24, "vpns2vpns is 24");
+    ASSERT(fw_config_chain_index("invalid") == -1, "invalid is -1");
+}
+
+static void test_chain_name(void)
+{
+    printf("test_chain_name\n");
+    ASSERT(strcmp(fw_config_chain_name(ZONE_FW, ZONE_FW), "fw2fw") == 0, "fw2fw");
+    ASSERT(strcmp(fw_config_chain_name(ZONE_LAN, ZONE_WAN), "lan2wan") == 0, "lan2wan");
+    ASSERT(strcmp(fw_config_chain_name(ZONE_DMZ, ZONE_VPN), "dmz2vpns") == 0, "dmz2vpns");
+}
+
+static void test_config_init(void)
+{
+    printf("test_config_init\n");
+    fw_config_t cfg;
+    fw_config_init(&cfg);
+
+    ASSERT(strcmp(cfg.version, "2.0.0") == 0, "default version");
+    ASSERT(cfg.language == LANG_EN, "default language EN");
+    ASSERT(cfg.backend == BACKEND_NFT, "default backend NFT");
+    ASSERT(cfg.ip_forward == 1, "default ip_forward on");
+    ASSERT(cfg.lan_if_count == 0, "no interfaces by default");
+
+    /* Check chain names are initialized */
+    ASSERT(strcmp(cfg.chains[0].name, "fw2fw") == 0, "chain 0 name");
+    ASSERT(strcmp(cfg.chains[7].name, "lan2wan") == 0, "chain 7 name");
+}
+
+static void test_load_minimal(void)
+{
+    printf("test_load_minimal\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    if (ret != 0) {
+        printf("  Load error: %s\n", err);
+    }
+    ASSERT(ret == 0, "load succeeds");
+
+    ASSERT(strcmp(cfg.version, "2.0.0") == 0, "version");
+    ASSERT(cfg.language == LANG_EN, "language EN");
+    ASSERT(cfg.backend == BACKEND_NFT, "backend NFT");
+
+    /* Interfaces */
+    ASSERT(cfg.lan_if_count == 1, "1 LAN interface");
+    ASSERT(strcmp(cfg.lan_ifs[0], "eth0") == 0, "LAN is eth0");
+    ASSERT(cfg.wan_if_count == 1, "1 WAN interface");
+    ASSERT(strcmp(cfg.wan_ifs[0], "eth1") == 0, "WAN is eth1");
+    ASSERT(cfg.dmz_if_count == 0, "no DMZ interfaces");
+    ASSERT(cfg.vpn_if_count == 0, "no VPN interfaces");
+
+    /* DNS */
+    ASSERT(cfg.dns_count == 1, "1 DNS server");
+    ASSERT(strcmp(cfg.dns[0], "8.8.8.8") == 0, "DNS is 8.8.8.8");
+
+    /* Ranges */
+    ASSERT(cfg.lan_range_count == 1, "1 LAN range");
+    ASSERT(strcmp(cfg.lan_ranges[0], "192.168.1.0/24") == 0, "LAN range");
+
+    /* Sysctl */
+    ASSERT(cfg.ip_forward == 1, "ip_forward on");
+    ASSERT(cfg.tcp_syncookies == 1, "tcp_syncookies on");
+    ASSERT(cfg.accept_source_route == 0, "accept_source_route off");
+
+    /* Filter chains */
+    ASSERT(cfg.chains[2].tcp_port_count == 2, "fw2wan has 2 tcp ports");
+    ASSERT(cfg.chains[2].tcp_ports[0] == 80, "fw2wan tcp port 0 is 80");
+    ASSERT(cfg.chains[2].tcp_ports[1] == 443, "fw2wan tcp port 1 is 443");
+    ASSERT(cfg.chains[2].udp_port_count == 1, "fw2wan has 1 udp port");
+    ASSERT(cfg.chains[2].udp_ports[0] == 53, "fw2wan udp port 0 is 53");
+
+    ASSERT(cfg.chains[5].tcp_port_count == 1, "lan2fw has 1 tcp port");
+    ASSERT(cfg.chains[5].tcp_ports[0] == 22, "lan2fw tcp port 0 is 22");
+
+    ASSERT(cfg.chains[7].tcp_port_count == 2, "lan2wan has 2 tcp ports");
+}
+
+static void test_load_full(void)
+{
+    printf("test_load_full\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("etc/firewallo/firewallo.json", &cfg, err, sizeof(err));
+    if (ret != 0) {
+        printf("  Load error: %s\n", err);
+    }
+    ASSERT(ret == 0, "load full config succeeds");
+
+    /* Interfaces */
+    ASSERT(cfg.lan_if_count == 3, "3 LAN interfaces");
+    ASSERT(cfg.wan_if_count == 2, "2 WAN interfaces");
+    ASSERT(cfg.dmz_if_count == 2, "2 DMZ interfaces");
+    ASSERT(cfg.vpn_if_count == 4, "4 VPN interfaces");
+
+    /* DNS */
+    ASSERT(cfg.dns_count == 4, "4 DNS servers");
+
+    /* Ranges */
+    ASSERT(cfg.lan_range_count == 2, "2 LAN ranges");
+    ASSERT(cfg.dmz_range_count == 1, "1 DMZ range");
+
+    /* Filter chains — check lan2wan matches the original */
+    int idx = fw_config_chain_index("lan2wan");
+    ASSERT(idx >= 0, "lan2wan index found");
+    ASSERT(cfg.chains[idx].tcp_port_count == 10, "lan2wan has 10 tcp ports");
+    ASSERT(cfg.chains[idx].tcp_ports[0] == 20, "lan2wan tcp[0] is 20");
+    ASSERT(cfg.chains[idx].tcp_ports[9] == 143, "lan2wan tcp[9] is 143");
+    ASSERT(cfg.chains[idx].udp_port_count == 1, "lan2wan has 1 udp port");
+    ASSERT(cfg.chains[idx].udp_ports[0] == 123, "lan2wan udp[0] is 123");
+
+    /* Check fw2wan */
+    idx = fw_config_chain_index("fw2wan");
+    ASSERT(cfg.chains[idx].tcp_port_count == 5, "fw2wan has 5 tcp ports");
+
+    /* Check dmz2fw */
+    idx = fw_config_chain_index("dmz2fw");
+    ASSERT(cfg.chains[idx].tcp_port_count == 1, "dmz2fw has 1 tcp port");
+    ASSERT(cfg.chains[idx].tcp_ports[0] == 22, "dmz2fw tcp[0] is 22");
+}
+
+static void test_validate(void)
+{
+    printf("test_validate\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for validate");
+
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == 0, "validate minimal passes");
+
+    /* Corrupt an interface name and check validation fails */
+    fw_strlcpy(cfg.lan_ifs[0], "0invalid", sizeof(cfg.lan_ifs[0]));
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == -1, "validate catches bad interface");
+
+    /* Restore and corrupt a DNS server */
+    fw_strlcpy(cfg.lan_ifs[0], "eth0", sizeof(cfg.lan_ifs[0]));
+    fw_strlcpy(cfg.dns[0], "999.999.999.999", sizeof(cfg.dns[0]));
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == -1, "validate catches bad DNS");
+}
+
+static void test_save_and_reload(void)
+{
+    printf("test_save_and_reload\n");
+    fw_config_t cfg1, cfg2;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg1, err, sizeof(err));
+    ASSERT(ret == 0, "load original");
+
+    /* Save to temp file */
+    const char *tmpfile = "/tmp/firewallo_test_config.json";
+    ret = fw_config_save(tmpfile, &cfg1);
+    ASSERT(ret == 0, "save succeeds");
+
+    /* Reload */
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload succeeds");
+
+    /* Compare key fields */
+    ASSERT(strcmp(cfg1.version, cfg2.version) == 0, "version matches");
+    ASSERT(cfg1.language == cfg2.language, "language matches");
+    ASSERT(cfg1.backend == cfg2.backend, "backend matches");
+    ASSERT(cfg1.lan_if_count == cfg2.lan_if_count, "lan_if_count matches");
+    ASSERT(cfg1.dns_count == cfg2.dns_count, "dns_count matches");
+    ASSERT(cfg1.ip_forward == cfg2.ip_forward, "ip_forward matches");
+
+    /* Compare filter chains */
+    for (int i = 0; i < FW_CHAIN_COUNT; i++) {
+        ASSERT(cfg1.chains[i].tcp_port_count == cfg2.chains[i].tcp_port_count,
+               "tcp_port_count matches");
+        ASSERT(cfg1.chains[i].udp_port_count == cfg2.chains[i].udp_port_count,
+               "udp_port_count matches");
+    }
+
+    /* Clean up */
+    remove(tmpfile);
+}
+
+int main(void)
+{
+    printf("=== Config Tests ===\n\n");
+
+    test_chain_index();
+    test_chain_name();
+    test_config_init();
+    test_load_minimal();
+    test_load_full();
+    test_validate();
+    test_save_and_reload();
+
+    printf("\n%d/%d tests passed\n", tests_passed, tests_run);
+    return tests_passed == tests_run ? 0 : 1;
+}

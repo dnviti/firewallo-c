@@ -1,0 +1,15 @@
+[Unit]
+Description=Firewallo Firewall Manager
+After=network-pre.target
+Before=network.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/firewallo start
+ExecStop=/usr/local/sbin/firewallo stop
+ExecReload=/usr/local/sbin/firewallo restart
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+
+# Stop services before removal
+systemctl stop firewallo-web.service 2>/dev/null || true
+systemctl stop firewallo.service 2>/dev/null || true
+systemctl disable firewallo.service 2>/dev/null || true
+systemctl disable firewallo-web.service 2>/dev/null || true
+
+exit 0
