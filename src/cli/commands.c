@@ -568,20 +568,22 @@ int cmd_set_range(fw_config_t *cfg, const char *zone, const char *action,
 int cmd_set_sysctl(fw_config_t *cfg, const char *key, const char *value,
                    const char *config_path)
 {
-    int val = atoi(value);
-    if (val != 0 && val != 1) {
+    char *endptr;
+    long val = strtol(value, &endptr, 10);
+    if (*endptr != '\0' || (val != 0 && val != 1)) {
         fprintf(stderr, "Value must be 0 or 1\n");
         return 1;
     }
 
+    int ival = (int)val;
     if (strcmp(key, "ip_forward") == 0)
-        cfg->ip_forward = val;
+        cfg->ip_forward = ival;
     else if (strcmp(key, "ip_dynaddr") == 0)
-        cfg->ip_dynaddr = val;
+        cfg->ip_dynaddr = ival;
     else if (strcmp(key, "tcp_syncookies") == 0)
-        cfg->tcp_syncookies = val;
+        cfg->tcp_syncookies = ival;
     else if (strcmp(key, "accept_source_route") == 0)
-        cfg->accept_source_route = val;
+        cfg->accept_source_route = ival;
     else {
         fprintf(stderr, "Unknown sysctl key: %s\n", key);
         fprintf(stderr, "Valid keys: ip_forward, ip_dynaddr, tcp_syncookies, accept_source_route\n");
@@ -591,7 +593,7 @@ int cmd_set_sysctl(fw_config_t *cfg, const char *key, const char *value,
     if (validate_and_save(cfg, config_path) != 0)
         return 1;
 
-    printf("sysctl %s = %d\n", key, val);
+    printf("sysctl %s = %d\n", key, ival);
     return 0;
 }
 
@@ -606,7 +608,13 @@ int cmd_set_chain(fw_config_t *cfg, const char *chain, const char *proto,
         return 1;
     }
 
-    int port = atoi(port_str);
+    char *endptr;
+    long port_l = strtol(port_str, &endptr, 10);
+    if (*endptr != '\0') {
+        fprintf(stderr, "Invalid port: %s (not a number)\n", port_str);
+        return 1;
+    }
+    int port = (int)port_l;
     if (!fw_validate_port(port)) {
         fprintf(stderr, "Invalid port: %s (must be 1-65535)\n", port_str);
         return 1;
@@ -730,15 +738,32 @@ int cmd_set_nat(fw_config_t *cfg, const char *direction, const char *action,
                 r->protocol = PROTO_TCP;
 
             json_value_t *dp = json_object_get(root, "dport");
-            if (dp && dp->type == JSON_NUMBER)
+            if (dp && dp->type == JSON_NUMBER) {
                 r->dport = (int)json_number_value(dp);
+            }
+            if (!fw_validate_port(r->dport)) {
+                json_free(root);
+                fprintf(stderr, "Invalid or missing dport (must be 1-65535)\n");
+                return 1;
+            }
 
             s = json_string_value(json_object_get(root, "to_dest_ip"));
-            if (s) fw_strlcpy(r->to_dest_ip, s, sizeof(r->to_dest_ip));
+            if (!s || !fw_validate_ipv4(s)) {
+                json_free(root);
+                fprintf(stderr, "Invalid or missing to_dest_ip\n");
+                return 1;
+            }
+            fw_strlcpy(r->to_dest_ip, s, sizeof(r->to_dest_ip));
 
             json_value_t *tdp = json_object_get(root, "to_dest_port");
-            if (tdp && tdp->type == JSON_NUMBER)
+            if (tdp && tdp->type == JSON_NUMBER) {
                 r->to_dest_port = (int)json_number_value(tdp);
+            }
+            if (!fw_validate_port(r->to_dest_port)) {
+                json_free(root);
+                fprintf(stderr, "Invalid or missing to_dest_port (must be 1-65535)\n");
+                return 1;
+            }
 
             s = json_string_value(json_object_get(root, "comment"));
             if (s) fw_strlcpy(r->comment, s, sizeof(r->comment));

@@ -436,6 +436,7 @@ static void test_config_roundtrip_full(void)
     cfg.tcp_syncookies = 0;
 
     int idx = fw_config_chain_index("lan2wan");
+    ASSERT(idx >= 0, "lan2wan chain exists");
     cfg.chains[idx].tcp_ports[cfg.chains[idx].tcp_port_count] = 9090;
     cfg.chains[idx].tcp_port_count++;
 
