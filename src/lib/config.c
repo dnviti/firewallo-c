@@ -806,6 +806,52 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
+    /* Validate NAT postrouting rules */
+    for (int i = 0; i < cfg->nat_post_count; i++) {
+        const fw_nat_post_t *r = &cfg->nat_post[i];
+        if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
+            snprintf(err, errlen, "invalid src in NAT postrouting rule %d: %s", i, r->src);
+            return -1;
+        }
+        if (r->oif[0] && !fw_validate_interface(r->oif)) {
+            snprintf(err, errlen, "invalid oif in NAT postrouting rule %d: %s", i, r->oif);
+            return -1;
+        }
+        if (r->type == NAT_SNAT && !r->to_source[0]) {
+            snprintf(err, errlen, "NAT postrouting rule %d: snat requires to_source", i);
+            return -1;
+        }
+        if (r->to_source[0] && !fw_validate_ipv4(r->to_source)) {
+            snprintf(err, errlen, "invalid to_source in NAT postrouting rule %d: %s", i, r->to_source);
+            return -1;
+        }
+    }
+
+    /* Validate NAT prerouting rules */
+    for (int i = 0; i < cfg->nat_pre_count; i++) {
+        const fw_nat_pre_t *r = &cfg->nat_pre[i];
+        if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
+            snprintf(err, errlen, "invalid src in NAT prerouting rule %d: %s", i, r->src);
+            return -1;
+        }
+        if (r->iif[0] && !fw_validate_interface(r->iif)) {
+            snprintf(err, errlen, "invalid iif in NAT prerouting rule %d: %s", i, r->iif);
+            return -1;
+        }
+        if (!fw_validate_port(r->dport)) {
+            snprintf(err, errlen, "invalid dport in NAT prerouting rule %d: %d", i, r->dport);
+            return -1;
+        }
+        if (!fw_validate_ipv4(r->to_dest_ip)) {
+            snprintf(err, errlen, "invalid to_dest_ip in NAT prerouting rule %d: %s", i, r->to_dest_ip);
+            return -1;
+        }
+        if (!fw_validate_port(r->to_dest_port)) {
+            snprintf(err, errlen, "invalid to_dest_port in NAT prerouting rule %d: %d", i, r->to_dest_port);
+            return -1;
+        }
+    }
+
     /* Validate ports in all chains */
     for (int c = 0; c < FW_CHAIN_COUNT; c++) {
         const fw_chain_t *ch = &cfg->chains[c];

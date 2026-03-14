@@ -1,8 +1,8 @@
 {
   "platform": "github",
   "enabled": true,
-  "sync": true,
-  "repo": "dnviti/firewall-c",
+  "sync": false,
+  "repo": "dnviti/firewallo-c",
   "labels": {
     "source": "claude-code",
     "task": "task",
