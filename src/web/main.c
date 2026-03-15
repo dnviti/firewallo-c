@@ -93,16 +93,6 @@ int main(int argc, char *argv[])
     signal(SIGTERM, sigint_handler);
     signal(SIGPIPE, SIG_IGN);
 
-    /* SEC-011: Warn when binding to all interfaces (no TLS available) */
-    if (strcmp(bind_addr, "0.0.0.0") == 0) {
-        fw_log(LOG_WARN,
-               "Binding to 0.0.0.0 — the server will be reachable from "
-               "all network interfaces over plaintext HTTP.");
-        fw_log(LOG_WARN,
-               "Consider using -b 127.0.0.1 and a TLS reverse proxy "
-               "for production deployments.");
-    }
-
     /* Init and run server */
     if (httpd_init(&server, bind_addr, port, webroot, config_path, &cfg) != 0) {
         fprintf(stderr, "Failed to start server on port %d\n", port);

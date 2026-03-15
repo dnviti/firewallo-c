@@ -396,15 +396,19 @@ int httpd_run(httpd_t *srv)
     fw_log(LOG_INFO, "firewallo-web listening on %s:%d",
            srv->bind_addr ? srv->bind_addr : "0.0.0.0", srv->port);
 
-    /* SEC-011: Warn that the server has no TLS support */
-    fw_log(LOG_WARN,
-           "WARNING: Server is running plain HTTP without TLS encryption.");
-    fw_log(LOG_WARN,
-           "All traffic is transmitted in cleartext. Do NOT expose this "
-           "server directly to untrusted networks.");
-    fw_log(LOG_WARN,
-           "For production use, place behind a TLS reverse proxy "
-           "(nginx, Caddy, HAProxy) and bind to 127.0.0.1 (-b 127.0.0.1).");
+    /* SEC-011: Consolidated TLS / bind-address warning */
+    if (srv->bind_addr && strcmp(srv->bind_addr, "0.0.0.0") == 0) {
+        fw_log(LOG_WARN,
+               "Listening on 0.0.0.0 over plain HTTP (no TLS). "
+               "The server is reachable from all interfaces in cleartext. "
+               "Use -b 127.0.0.1 with a TLS reverse proxy (nginx/Caddy/HAProxy) "
+               "for production.");
+    } else {
+        fw_log(LOG_WARN,
+               "Listening over plain HTTP (no TLS). "
+               "Place behind a TLS reverse proxy (nginx/Caddy/HAProxy) "
+               "for production.");
+    }
 
     /* Install SIGCHLD handler to set reap flag */
     struct sigaction sa;
