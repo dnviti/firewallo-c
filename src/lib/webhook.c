@@ -12,6 +12,8 @@
 #include <signal.h>
 #include <time.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 
 /* ── Event name mapping ───────────────────────────────────────────── */
 
@@ -35,16 +37,14 @@ int fw_webhook_validate_url(const char *url)
     if (!url || !*url)
         return 0;
 
-    /* Must start with http:// or https:// */
-    if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0)
+    /* Must start with http:// (https:// rejected: no TLS support) */
+    if (strncmp(url, "https://", 8) == 0)
+        return 0;
+    if (strncmp(url, "http://", 7) != 0)
         return 0;
 
     /* Must have a host after the scheme */
-    const char *after_scheme = url;
-    if (strncmp(url, "https://", 8) == 0)
-        after_scheme = url + 8;
-    else
-        after_scheme = url + 7;
+    const char *after_scheme = url + 7;
 
     /* Must have at least one char for hostname */
     if (!*after_scheme)
@@ -67,6 +67,19 @@ int fw_webhook_validate_url(const char *url)
     if (strlen(url) >= FW_MAX_WEBHOOK_URL)
         return 0;
 
+    return 1;
+}
+
+/* ── Secret validation ────────────────────────────────────────────── */
+
+int fw_webhook_validate_secret(const char *secret)
+{
+    if (!secret)
+        return 1; /* NULL is ok (no secret) */
+    for (const char *p = secret; *p; p++) {
+        if (iscntrl((unsigned char)*p))
+            return 0;
+    }
     return 1;
 }
 
@@ -136,6 +149,24 @@ static int parse_url(const char *url, parsed_url_t *out)
     return 0;
 }
 
+/* ── Write all bytes, handling partial writes and EINTR ───────────── */
+
+static int write_all(int fd, const void *buf, size_t len)
+{
+    const char *p = (const char *)buf;
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t w = write(fd, p, remaining);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        p += w;
+        remaining -= (size_t)w;
+    }
+    return 0;
+}
+
 /* ── HTTP POST via plain socket (no TLS) ──────────────────────────── */
 
 static int http_post(const parsed_url_t *url, const char *body,
@@ -158,23 +189,48 @@ static int http_post(const parsed_url_t *url, const char *body,
         return -1;
     }
 
-    /* Set a connect timeout via alarm */
-    struct sigaction sa_old;
-    struct sigaction sa_new;
-    memset(&sa_new, 0, sizeof(sa_new));
-    sa_new.sa_handler = SIG_IGN;
-    sigaction(SIGALRM, &sa_new, &sa_old);
-    alarm(10);
+    /* Non-blocking connect with poll-based timeout */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        freeaddrinfo(res);
+        return -1;
+    }
 
     int ret = connect(fd, res->ai_addr, res->ai_addrlen);
-    alarm(0);
-    sigaction(SIGALRM, &sa_old, NULL);
     freeaddrinfo(res);
 
-    if (ret != 0) {
+    if (ret < 0 && errno != EINPROGRESS) {
         close(fd);
         return -1;
     }
+
+    if (ret < 0) {
+        /* EINPROGRESS: wait for connect to complete with 10s timeout */
+        struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+        int pr = poll(&pfd, 1, 10000);
+        if (pr <= 0) {
+            close(fd);
+            return -1; /* timeout or error */
+        }
+        /* Check for connect error */
+        int so_err = 0;
+        socklen_t so_len = sizeof(so_err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &so_len) < 0 || so_err != 0) {
+            close(fd);
+            return -1;
+        }
+    }
+
+    /* Restore blocking mode */
+    if (fcntl(fd, F_SETFL, flags) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    /* Set receive timeout for response read (10 seconds) */
+    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* Build HTTP request */
     char header[2048];
@@ -199,15 +255,19 @@ static int http_post(const parsed_url_t *url, const char *body,
         return -1;
     }
 
-    /* Send header */
-    ssize_t w = write(fd, header, (size_t)hlen);
-    if (w < 0) { close(fd); return -1; }
+    /* Send header (handling partial writes) */
+    if (write_all(fd, header, (size_t)hlen) < 0) {
+        close(fd);
+        return -1;
+    }
 
-    /* Send body */
-    w = write(fd, body, body_len);
-    if (w < 0) { close(fd); return -1; }
+    /* Send body (handling partial writes) */
+    if (write_all(fd, body, body_len) < 0) {
+        close(fd);
+        return -1;
+    }
 
-    /* Read response status line */
+    /* Read response status line (SO_RCVTIMEO protects against stalls) */
     char resp_buf[512];
     ssize_t r = read(fd, resp_buf, sizeof(resp_buf) - 1);
     close(fd);
@@ -237,13 +297,12 @@ static int send_with_retry(const fw_webhook_t *wh, const char *body, size_t body
     }
 
     if (url.use_tls) {
-        /* TLS not supported in pure POSIX - log warning and attempt plain */
-        fw_log(LOG_WARN, "webhook: TLS not supported, attempting plain HTTP to %s:%s",
-               url.host, url.port);
+        fw_log(LOG_ERROR, "webhook: https:// URLs not supported (no TLS): %s", wh->url);
+        return -1;
     }
 
     int max_retries = wh->retry_count > 0 ? wh->retry_count : 1;
-    if (max_retries > 5) max_retries = 5;
+    if (max_retries > FW_MAX_WEBHOOK_RETRY) max_retries = FW_MAX_WEBHOOK_RETRY;
 
     for (int attempt = 0; attempt < max_retries; attempt++) {
         if (attempt > 0) {
@@ -300,6 +359,13 @@ int fw_webhook_send(const fw_config_t *cfg, fw_webhook_event_t event,
     if (elen < 0 || (size_t)elen >= sizeof(envelope))
         return -1;
 
+    /* Prevent zombie processes: ignore SIGCHLD so child is auto-reaped */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sa.sa_flags = SA_NOCLDWAIT;
+    sigaction(SIGCHLD, &sa, NULL);
+
     /* Fork a child to deliver webhooks non-blocking */
     pid_t pid = fork();
     if (pid < 0) {
@@ -308,8 +374,7 @@ int fw_webhook_send(const fw_config_t *cfg, fw_webhook_event_t event,
     }
 
     if (pid > 0) {
-        /* Parent: don't wait, let child run in background.
-         * Reap with SIGCHLD handler or waitpid WNOHANG elsewhere. */
+        /* Parent: child will be auto-reaped (SA_NOCLDWAIT) */
         return 0;
     }
 

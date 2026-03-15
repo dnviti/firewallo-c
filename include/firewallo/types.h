@@ -21,6 +21,7 @@
 #define FW_MAX_WEBHOOKS      8
 #define FW_MAX_WEBHOOK_URL 512
 #define FW_MAX_WEBHOOK_SECRET 128
+#define FW_MAX_WEBHOOK_RETRY    5
 
 /* Zones */
 typedef enum {

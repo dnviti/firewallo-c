@@ -20,15 +20,11 @@ static void test_validate_url(void)
 {
     printf("test_validate_url\n");
 
-    /* Valid URLs */
+    /* Valid URLs (only http:// supported, no TLS) */
     ASSERT(fw_webhook_validate_url("http://example.com/webhook") == 1,
            "http URL valid");
-    ASSERT(fw_webhook_validate_url("https://hooks.slack.com/services/T00/B00/xxx") == 1,
-           "https slack URL valid");
     ASSERT(fw_webhook_validate_url("http://localhost:8080/hook") == 1,
            "localhost with port valid");
-    ASSERT(fw_webhook_validate_url("https://discord.com/api/webhooks/123/abc") == 1,
-           "discord webhook valid");
     ASSERT(fw_webhook_validate_url("http://192.168.1.1:9000/notify") == 1,
            "IP with port valid");
 
@@ -39,6 +35,24 @@ static void test_validate_url(void)
     ASSERT(fw_webhook_validate_url("not-a-url") == 0, "no scheme invalid");
     ASSERT(fw_webhook_validate_url("http://") == 0, "no host invalid");
     ASSERT(fw_webhook_validate_url("https://") == 0, "https no host invalid");
+    /* https:// rejected: no TLS support */
+    ASSERT(fw_webhook_validate_url("https://hooks.slack.com/services/T00/B00/xxx") == 0,
+           "https rejected (no TLS)");
+    ASSERT(fw_webhook_validate_url("https://discord.com/api/webhooks/123/abc") == 0,
+           "https discord rejected (no TLS)");
+}
+
+static void test_validate_secret(void)
+{
+    printf("test_validate_secret\n");
+
+    ASSERT(fw_webhook_validate_secret(NULL) == 1, "NULL secret valid");
+    ASSERT(fw_webhook_validate_secret("") == 1, "empty secret valid");
+    ASSERT(fw_webhook_validate_secret("my-secret-key") == 1, "normal secret valid");
+    ASSERT(fw_webhook_validate_secret("abc123!@#") == 1, "special chars valid");
+    ASSERT(fw_webhook_validate_secret("secret\nvalue") == 0, "newline in secret invalid");
+    ASSERT(fw_webhook_validate_secret("secret\rvalue") == 0, "CR in secret invalid");
+    ASSERT(fw_webhook_validate_secret("secret\x01value") == 0, "control char invalid");
 }
 
 static void test_validate_events(void)
@@ -195,6 +209,7 @@ int main(void)
     printf("=== Webhook Tests ===\n\n");
 
     test_validate_url();
+    test_validate_secret();
     test_validate_events();
     test_event_name();
     test_webhook_config_roundtrip();

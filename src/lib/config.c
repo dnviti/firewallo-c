@@ -1061,7 +1061,11 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "invalid webhook events mask at index %d: %u", i, w->events);
             return -1;
         }
-        if (w->retry_count < 0 || w->retry_count > 10) {
+        if (!fw_webhook_validate_secret(w->secret)) {
+            snprintf(err, errlen, "webhook secret at index %d contains control characters", i);
+            return -1;
+        }
+        if (w->retry_count < 0 || w->retry_count > FW_MAX_WEBHOOK_RETRY) {
             snprintf(err, errlen, "invalid webhook retry_count at index %d: %d", i, w->retry_count);
             return -1;
         }

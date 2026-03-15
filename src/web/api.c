@@ -105,8 +105,16 @@ static void api_version(httpd_t *srv, http_response_t *resp)
 
 static void api_get_config(httpd_t *srv, http_response_t *resp)
 {
-    /* Serialize config directly to memory — no temp files needed */
-    char *json = fw_config_serialize(srv->config);
+    /* Make a copy and redact webhook secrets before serialization */
+    fw_config_t redacted = *srv->config;
+    for (int i = 0; i < redacted.webhook_count; i++) {
+        if (redacted.webhooks[i].secret[0])
+            fw_strlcpy(redacted.webhooks[i].secret, "***",
+                        sizeof(redacted.webhooks[i].secret));
+    }
+
+    /* Serialize redacted config directly to memory — no temp files needed */
+    char *json = fw_config_serialize(&redacted);
     if (!json) {
         api_error(resp, 500, "Serialization failed");
         return;
@@ -838,7 +846,14 @@ static void api_add_webhook(httpd_t *srv, const http_request_t *req, http_respon
     fw_strlcpy(w->url, s, sizeof(w->url));
 
     s = json_string_value(json_object_get(body, "secret"));
-    if (s) fw_strlcpy(w->secret, s, sizeof(w->secret));
+    if (s) {
+        if (!fw_webhook_validate_secret(s)) {
+            json_free(body);
+            api_error(resp, 400, "Secret contains invalid control characters");
+            return;
+        }
+        fw_strlcpy(w->secret, s, sizeof(w->secret));
+    }
 
     json_value_t *ev = json_object_get(body, "events");
     if (ev && ev->type == JSON_NUMBER)
@@ -859,10 +874,17 @@ static void api_add_webhook(httpd_t *srv, const http_request_t *req, http_respon
         w->enabled = 1;
 
     json_value_t *rc = json_object_get(body, "retry_count");
-    if (rc && rc->type == JSON_NUMBER)
-        w->retry_count = (int)json_number_value(rc);
-    else
+    if (rc && rc->type == JSON_NUMBER) {
+        int rcv = (int)json_number_value(rc);
+        if (rcv < 0 || rcv > FW_MAX_WEBHOOK_RETRY) {
+            json_free(body);
+            api_error(resp, 400, "retry_count must be 0-5");
+            return;
+        }
+        w->retry_count = rcv;
+    } else {
         w->retry_count = 3;
+    }
 
     s = json_string_value(json_object_get(body, "comment"));
     if (s) fw_strlcpy(w->comment, s, sizeof(w->comment));
@@ -904,7 +926,15 @@ static void api_update_webhook(httpd_t *srv, int idx,
     }
 
     s = json_string_value(json_object_get(body, "secret"));
-    if (s) fw_strlcpy(w->secret, s, sizeof(w->secret));
+    if (s && strcmp(s, "***") != 0) {
+        if (!fw_webhook_validate_secret(s)) {
+            json_free(body);
+            api_error(resp, 400, "Secret contains invalid control characters");
+            return;
+        }
+        fw_strlcpy(w->secret, s, sizeof(w->secret));
+    }
+    /* "***" means "unchanged" — skip updating the secret */
 
     json_value_t *ev = json_object_get(body, "events");
     if (ev && ev->type == JSON_NUMBER) {
@@ -921,8 +951,15 @@ static void api_update_webhook(httpd_t *srv, int idx,
     if (en) w->enabled = json_bool_value(en);
 
     json_value_t *rc = json_object_get(body, "retry_count");
-    if (rc && rc->type == JSON_NUMBER)
-        w->retry_count = (int)json_number_value(rc);
+    if (rc && rc->type == JSON_NUMBER) {
+        int rcv = (int)json_number_value(rc);
+        if (rcv < 0 || rcv > FW_MAX_WEBHOOK_RETRY) {
+            json_free(body);
+            api_error(resp, 400, "retry_count must be 0-5");
+            return;
+        }
+        w->retry_count = rcv;
+    }
 
     s = json_string_value(json_object_get(body, "comment"));
     if (s) fw_strlcpy(w->comment, s, sizeof(w->comment));
@@ -1027,22 +1064,36 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
     /* PUT/DELETE /api/v1/config/webhooks/{index}[/test] */
     const char *sub;
     if ((sub = path_after(path, "config/webhooks/")) != NULL) {
-        /* Check for /test suffix */
-        char idx_buf[8];
+        /* Extract the index segment and parse with strtol */
         const char *slash = strchr(sub, '/');
+        const char *idx_str = sub;
+        char idx_buf[8];
         if (slash) {
             size_t ilen = (size_t)(slash - sub);
-            if (ilen >= sizeof(idx_buf)) ilen = sizeof(idx_buf) - 1;
+            if (ilen == 0 || ilen >= sizeof(idx_buf)) {
+                api_error(resp, 400, "Invalid webhook index");
+                return 0;
+            }
             memcpy(idx_buf, sub, ilen);
             idx_buf[ilen] = '\0';
-            int widx = atoi(idx_buf);
+            idx_str = idx_buf;
+        }
 
+        char *endptr = NULL;
+        long widx_l = strtol(idx_str, &endptr, 10);
+        if (endptr == idx_str || *endptr != '\0' ||
+            widx_l < 0 || widx_l > FW_MAX_WEBHOOKS) {
+            api_error(resp, 400, "Invalid webhook index");
+            return 0;
+        }
+        int widx = (int)widx_l;
+
+        if (slash) {
             if (strcmp(slash + 1, "test") == 0 && strcmp(method, "POST") == 0) {
                 api_test_webhook(srv, widx, resp);
                 return 0;
             }
         } else {
-            int widx = atoi(sub);
             if (strcmp(method, "PUT") == 0) {
                 api_update_webhook(srv, widx, req, resp);
                 return 0;
