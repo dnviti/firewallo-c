@@ -1,4 +1,5 @@
 #include "firewallo/validate.h"
+#include "firewallo/alias.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -334,6 +335,9 @@ int fw_validate_addr_field(const char *addr)
     if (fw_validate_ipv4(addr))
         return 1;
     if (fw_validate_ipv4_cidr(addr))
+        return 1;
+    /* Accept $alias references — actual resolution is checked separately */
+    if (fw_alias_is_ref(addr))
         return 1;
     return 0;
 }
