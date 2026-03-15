@@ -1,226 +1,695 @@
-const view = document.getElementById('view');
+/* ============================================================
+   Firewallo Web Application
+   SPA router, views, theme management, sidebar behavior
+   ============================================================ */
 
-const routes = {
-    dashboard: renderDashboard,
-    filter: renderFilter,
-    nat: renderNat,
-    config: renderConfig,
-    logs: renderLogs
+var view = document.getElementById('view');
+var pageTitle = document.getElementById('page-title');
+
+var routes = {
+    dashboard: { render: renderDashboard, title: 'Dashboard' },
+    filter: { render: renderFilter, title: 'Filter Rules' },
+    nat: { render: renderNat, title: 'NAT' },
+    config: { render: renderConfig, title: 'Configuration' },
+    logs: { render: renderLogs, title: 'Rules' }
 };
 
+/* --- Theme Management --- */
+(function initTheme() {
+    var saved = localStorage.getItem('firewallo-theme');
+    if (saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+    }
+})();
+
+document.getElementById('theme-toggle').addEventListener('click', function() {
+    var current = document.documentElement.getAttribute('data-theme') || 'dark';
+    var next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.classList.add('theme-transitioning');
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('firewallo-theme', next);
+    setTimeout(function() {
+        document.documentElement.classList.remove('theme-transitioning');
+    }, 350);
+});
+
+/* --- Sidebar --- */
+(function initSidebar() {
+    var sidebar = document.getElementById('sidebar');
+    var collapseBtn = document.getElementById('sidebar-collapse-btn');
+    var hamburgerBtn = document.getElementById('hamburger-btn');
+
+    var collapsed = localStorage.getItem('firewallo-sidebar-collapsed') === 'true';
+    if (collapsed) sidebar.classList.add('collapsed');
+
+    collapseBtn.addEventListener('click', function() {
+        sidebar.classList.toggle('collapsed');
+        localStorage.setItem('firewallo-sidebar-collapsed', sidebar.classList.contains('collapsed'));
+    });
+
+    hamburgerBtn.addEventListener('click', function() {
+        sidebar.classList.toggle('mobile-open');
+    });
+
+    // Close mobile sidebar on nav click
+    sidebar.querySelectorAll('.nav-item').forEach(function(item) {
+        item.addEventListener('click', function() {
+            if (window.innerWidth <= 768) {
+                sidebar.classList.remove('mobile-open');
+            }
+        });
+    });
+})();
+
+/* --- Status Indicator --- */
+async function updateStatus() {
+    var indicator = document.getElementById('status-indicator');
+    try {
+        var res = await API.get('firewall/status');
+        var s = (res.data || {});
+        if (s.active) {
+            indicator.className = 'status-indicator online';
+            indicator.querySelector('.status-text').textContent = 'Active';
+        } else {
+            indicator.className = 'status-indicator offline';
+            indicator.querySelector('.status-text').textContent = 'Inactive';
+        }
+    } catch (e) {
+        indicator.className = 'status-indicator offline';
+        indicator.querySelector('.status-text').textContent = 'Error';
+    }
+}
+
+// Update status periodically
+updateStatus();
+setInterval(updateStatus, 15000);
+
+/* --- Version in sidebar --- */
+(async function loadVersion() {
+    try {
+        var res = await API.get('version');
+        var ver = (res.data || {}).version || '';
+        var el = document.getElementById('sidebar-version');
+        if (el && ver) el.textContent = 'v' + ver;
+    } catch (e) { /* ignore */ }
+})();
+
+/* ============================================================
+   Views
+   ============================================================ */
+
+// --- Dashboard ---
 async function renderDashboard() {
-    const [status, validate, version] = await Promise.all([
+    view.innerHTML = '';
+    view.appendChild(createLoading('Loading dashboard...'));
+
+    var results = await Promise.all([
         API.get('firewall/status'),
         API.get('validate'),
-        API.get('version')
+        API.get('version'),
+        API.get('filter')
     ]);
+    var status = results[0];
+    var validate = results[1];
+    var version = results[2];
+    var filter = results[3];
 
-    const s = status.data || {};
-    const v = validate.data || {};
+    var s = status.data || {};
+    var v = validate.data || {};
+    var chains = filter.data || {};
+
+    // Count total interfaces (estimate from chain info)
+    var chainKeys = Object.keys(chains);
+    var totalPorts = 0;
+    chainKeys.forEach(function(k) {
+        var c = chains[k];
+        totalPorts += (c.tcp_count || 0) + (c.udp_count || 0);
+    });
 
     view.innerHTML = '';
-    view.appendChild(html('h2', {}, 'Dashboard'));
 
-    const grid = html('div', { className: 'grid grid-3' });
-    grid.appendChild(html('div', { className: 'card stat' },
-        html('div', { className: 'value' }, s.active ? 'Active' : 'Inactive'),
-        html('div', { className: 'label' }, 'Firewall Status')
+    // Stat cards
+    var statGrid = html('div', { className: 'stat-grid' });
+    statGrid.appendChild(createStatCard(
+        s.active ? 'Active' : 'Inactive',
+        'Firewall Status',
+        s.active ? 'success' : 'danger',
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7v6c0 5.5 4.3 10.3 10 11 5.7-.7 10-5.5 10-11V7L12 2z"/></svg>'
     ));
-    grid.appendChild(html('div', { className: 'card stat' },
-        html('div', { className: 'value' }, (s.backend || 'nft').toUpperCase()),
-        html('div', { className: 'label' }, 'Backend')
+    statGrid.appendChild(createStatCard(
+        (s.backend || 'nft').toUpperCase(),
+        'Backend',
+        'info',
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1"/><circle cx="6" cy="18" r="1"/></svg>'
     ));
-    grid.appendChild(html('div', { className: 'card stat' },
-        html('div', { className: 'value' }, String(v.command_count || 0)),
-        html('div', { className: 'label' }, 'Rules')
+    statGrid.appendChild(createStatCard(
+        String(v.command_count || 0),
+        'Generated Rules',
+        'accent',
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>'
     ));
-    view.appendChild(grid);
+    statGrid.appendChild(createStatCard(
+        String(totalPorts),
+        'Open Ports',
+        'warning',
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'
+    ));
+    view.appendChild(statGrid);
 
-    const actions = html('div', { className: 'card' });
-    actions.appendChild(html('h3', {}, 'Actions'));
-    const btnGroup = html('div', { className: 'btn-group' });
-    ['start', 'stop', 'restart', 'reset'].forEach(action => {
-        const cls = action === 'reset' ? 'btn btn-danger' : 'btn btn-primary';
-        btnGroup.appendChild(html('button', {
-            className: cls,
-            onclick: async () => {
-                const r = await API.post(`firewall/${action}`, {});
-                notify(r.error ? r.message : r.data.message, r.error ? 'error' : 'success');
-                renderDashboard();
-            }
-        }, action.charAt(0).toUpperCase() + action.slice(1)));
+    // Quick actions
+    var actionsCard = html('div', { className: 'card' });
+    var actionsHeader = html('div', { className: 'card-header' });
+    actionsHeader.appendChild(html('h3', {}, 'Quick Actions'));
+    actionsCard.appendChild(actionsHeader);
+
+    var btnGroup = html('div', { className: 'btn-group' });
+    var actions = [
+        { name: 'start', label: 'Start', cls: 'btn btn-success', icon: '\u25B6' },
+        { name: 'stop', label: 'Stop', cls: 'btn btn-danger', icon: '\u25A0' },
+        { name: 'restart', label: 'Restart', cls: 'btn btn-primary', icon: '\u21BB' },
+        { name: 'reset', label: 'Reset', cls: 'btn btn-danger', icon: '\u26A0' }
+    ];
+
+    actions.forEach(function(action) {
+        var btn = html('button', { className: action.cls }, action.icon + ' ' + action.label);
+        btn.addEventListener('click', function() {
+            var msg = action.name === 'reset'
+                ? 'This will flush all firewall rules and reset to defaults. Are you sure?'
+                : 'Are you sure you want to ' + action.name + ' the firewall?';
+            var confirmCls = action.name === 'reset' || action.name === 'stop'
+                ? 'btn btn-danger' : 'btn btn-primary';
+            showConfirm(
+                action.label + ' Firewall',
+                msg,
+                async function() {
+                    var r = await API.post('firewall/' + action.name, {});
+                    notify(r.error ? r.message : (r.data || {}).message || 'Done',
+                           r.error ? 'error' : 'success');
+                    updateStatus();
+                    renderDashboard();
+                },
+                action.label,
+                confirmCls
+            );
+        });
+        btnGroup.appendChild(btn);
     });
-    actions.appendChild(btnGroup);
-    view.appendChild(actions);
+    actionsCard.appendChild(btnGroup);
+    view.appendChild(actionsCard);
 
-    const info = html('div', { className: 'card' });
-    info.appendChild(html('h3', {}, 'Version'));
-    info.appendChild(html('p', {}, `Firewallo ${(version.data || {}).version || '?'}`));
-    info.appendChild(html('p', { className: 'mono' },
-        `Valid: ${v.valid ? 'Yes' : 'No'}`));
-    view.appendChild(info);
+    // Validation and version info
+    var infoGrid = html('div', { className: 'grid grid-2' });
+
+    var valCard = html('div', { className: 'card' });
+    var valHeader = html('div', { className: 'card-header' });
+    valHeader.appendChild(html('h3', {}, 'Validation'));
+    valCard.appendChild(valHeader);
+    var validBadge = v.valid
+        ? html('span', { className: 'badge badge-success' }, 'Valid')
+        : html('span', { className: 'badge badge-danger' }, 'Invalid');
+    valCard.appendChild(html('div', { className: 'flex items-center gap-3' },
+        validBadge,
+        html('span', { className: 'mono', style: 'color:var(--text-secondary)' },
+            (v.command_count || 0) + ' commands generated')
+    ));
+    if (v.errors && v.errors.length > 0) {
+        valCard.appendChild(html('div', { className: 'mt-3' }));
+        v.errors.forEach(function(err) {
+            valCard.appendChild(html('p', {
+                style: 'color:var(--danger);font-size:0.85rem;margin-top:4px'
+            }, err));
+        });
+    }
+    infoGrid.appendChild(valCard);
+
+    var verCard = html('div', { className: 'card' });
+    var verHeader = html('div', { className: 'card-header' });
+    verHeader.appendChild(html('h3', {}, 'System'));
+    verCard.appendChild(verHeader);
+    verCard.appendChild(html('p', {}, 'Firewallo ' + ((version.data || {}).version || '?')));
+    verCard.appendChild(html('p', {
+        className: 'mono mt-2',
+        style: 'color:var(--text-muted);font-size:0.82rem'
+    }, 'Backend: ' + (s.backend || 'nft') + ' | Config: ' + (v.valid ? 'OK' : 'errors')));
+    infoGrid.appendChild(verCard);
+
+    view.appendChild(infoGrid);
 }
+
+// --- Filter Rules ---
+var filterActiveTab = 'fw';
 
 async function renderFilter() {
-    const res = await API.get('filter');
-    const chains = res.data || {};
+    view.innerHTML = '';
+    view.appendChild(createLoading('Loading filter chains...'));
+
+    var res = await API.get('filter');
+    var chains = res.data || {};
 
     view.innerHTML = '';
-    view.appendChild(html('h2', {}, 'Filter Chains'));
 
-    const zones = ['fw', 'lan', 'wan', 'dmz', 'vpns'];
-    const headerRow = html('div', { className: 'chain-grid' });
-    headerRow.appendChild(html('div', { className: 'chain-cell', style: 'visibility:hidden' }));
-    ['FW', 'LAN', 'WAN', 'DMZ', 'VPN'].forEach(z =>
-        headerRow.appendChild(html('div', { className: 'chain-cell' },
-            html('div', { className: 'name' }, z))));
+    var zones = [
+        { key: 'fw', label: 'FW' },
+        { key: 'lan', label: 'LAN' },
+        { key: 'wan', label: 'WAN' },
+        { key: 'dmz', label: 'DMZ' },
+        { key: 'vpns', label: 'VPN' }
+    ];
 
-    const grid = html('div');
-    grid.appendChild(headerRow);
-
-    zones.forEach(src => {
-        const row = html('div', { className: 'chain-grid' });
-        row.appendChild(html('div', { className: 'chain-cell' },
-            html('div', { className: 'name' }, src.toUpperCase())));
-        zones.forEach(dst => {
-            const name = `${src}2${dst}`;
-            const info = chains[name] || { tcp_count: 0, udp_count: 0 };
-            const total = info.tcp_count + info.udp_count + (info.rule_count || 0);
-            const cls = total > 0 ? 'chain-cell has-rules' : 'chain-cell';
-            row.appendChild(html('div', {
-                className: cls,
-                onclick: () => renderChainDetail(name)
-            },
-                html('div', { className: 'name' }, name),
-                html('div', { className: 'count' }, `${info.tcp_count}T ${info.udp_count}U`)
-            ));
+    // Count rules per source zone for tab badges
+    zones.forEach(function(z) {
+        var count = 0;
+        zones.forEach(function(dst) {
+            var name = z.key + '2' + dst.key;
+            var info = chains[name] || {};
+            count += (info.tcp_count || 0) + (info.udp_count || 0) + (info.rule_count || 0);
         });
-        grid.appendChild(row);
+        z.count = count;
     });
-    view.appendChild(grid);
+
+    var tabContainer = createTabBar(zones, function(zoneKey, contentArea) {
+        filterActiveTab = zoneKey;
+        renderFilterZone(zoneKey, zones, chains, contentArea);
+    });
+
+    view.appendChild(tabContainer);
 }
 
+function renderFilterZone(srcZone, zones, chains, container) {
+    container.innerHTML = '';
+
+    var desc = html('p', { className: 'section-desc mb-4' },
+        'Traffic originating from zone ' + srcZone.toUpperCase() + ' to other zones');
+    container.appendChild(desc);
+
+    // Chain grid for this source zone
+    var grid = html('div', { className: 'chain-grid', style: 'margin-bottom:20px' });
+    zones.forEach(function(dst) {
+        var name = srcZone + '2' + dst.key;
+        var info = chains[name] || { tcp_count: 0, udp_count: 0, rule_count: 0 };
+        var total = (info.tcp_count || 0) + (info.udp_count || 0) + (info.rule_count || 0);
+        var cls = total > 0 ? 'chain-cell has-rules' : 'chain-cell';
+        var cell = html('div', { className: cls },
+            html('div', { className: 'name' }, dst.label),
+            html('div', { className: 'count' },
+                (info.tcp_count || 0) + ' TCP / ' + (info.udp_count || 0) + ' UDP')
+        );
+        cell.addEventListener('click', function() {
+            renderChainDetail(name);
+        });
+        grid.appendChild(cell);
+    });
+    container.appendChild(grid);
+
+    // Table of all chains for this zone
+    var tableRows = [];
+    zones.forEach(function(dst) {
+        var name = srcZone + '2' + dst.key;
+        var info = chains[name] || {};
+        var tcpCount = info.tcp_count || 0;
+        var udpCount = info.udp_count || 0;
+        var ruleCount = info.rule_count || 0;
+        var total = tcpCount + udpCount + ruleCount;
+
+        var statusBadge = total > 0
+            ? html('span', { className: 'badge badge-success' }, total + ' rules')
+            : html('span', { className: 'badge badge-muted' }, 'Empty');
+
+        var viewBtn = html('button', { className: 'btn btn-sm' }, 'View');
+        viewBtn.addEventListener('click', function() { renderChainDetail(name); });
+
+        tableRows.push([
+            name,
+            srcZone.toUpperCase(),
+            dst.label,
+            String(tcpCount),
+            String(udpCount),
+            statusBadge,
+            viewBtn
+        ]);
+    });
+
+    var table = createFilterableTable(
+        ['Chain', 'From', 'To', 'TCP', 'UDP', 'Status', 'Action'],
+        tableRows,
+        'Filter chains...'
+    );
+    container.appendChild(table);
+}
+
+// --- Chain Detail ---
 async function renderChainDetail(name) {
-    const res = await API.get(`filter/${name}`);
-    const chain = res.data || {};
+    view.innerHTML = '';
+    view.appendChild(createLoading('Loading chain ' + name + '...'));
+
+    var res = await API.get('filter/' + name);
+    var chain = res.data || {};
 
     view.innerHTML = '';
-    view.appendChild(html('h2', {}, `Chain: ${name}`));
-    view.appendChild(html('button', {
-        className: 'btn',
-        onclick: renderFilter,
-        style: 'margin-bottom:16px'
-    }, 'Back to Filter Grid'));
 
-    const card = html('div', { className: 'card' });
-    card.appendChild(html('h3', {}, 'TCP Ports'));
-    if ((chain.tcp_ports || []).length > 0) {
-        card.appendChild(html('p', { className: 'mono' }, chain.tcp_ports.join(', ')));
-    } else {
-        card.appendChild(html('p', { className: 'mono' }, 'None'));
-    }
+    // Breadcrumb / back
+    var topBar = html('div', { className: 'flex items-center gap-3 mb-4' });
+    var backBtn = html('button', { className: 'btn btn-ghost btn-sm' }, '\u2190 Back to Filter');
+    backBtn.addEventListener('click', renderFilter);
+    topBar.appendChild(backBtn);
+    topBar.appendChild(html('h2', { style: 'margin:0' }, 'Chain: ' + name));
+    view.appendChild(topBar);
 
-    card.appendChild(html('h3', { style: 'margin-top:16px' }, 'UDP Ports'));
-    if ((chain.udp_ports || []).length > 0) {
-        card.appendChild(html('p', { className: 'mono' }, chain.udp_ports.join(', ')));
+    // TCP Ports
+    var tcpCard = html('div', { className: 'card' });
+    var tcpHeader = html('div', { className: 'card-header' });
+    tcpHeader.appendChild(html('h3', {}, 'TCP Ports'));
+    tcpHeader.appendChild(html('span', { className: 'badge badge-accent' },
+        (chain.tcp_ports || []).length + ' ports'));
+    tcpCard.appendChild(tcpHeader);
+
+    var tcpPorts = chain.tcp_ports || [];
+    if (tcpPorts.length > 0) {
+        var portList = html('div', { className: 'port-list' });
+        tcpPorts.forEach(function(p) {
+            portList.appendChild(createPortTag(p, function(port) {
+                showConfirm('Remove TCP Port', 'Remove port ' + port + ' from ' + name + '?',
+                    async function() {
+                        var r = await API.del('filter/' + name + '/tcp/' + port);
+                        notify(r.error ? r.message : 'Port removed', r.error ? 'error' : 'success');
+                        renderChainDetail(name);
+                    }, 'Remove', 'btn btn-danger');
+            }));
+        });
+        tcpCard.appendChild(portList);
     } else {
-        card.appendChild(html('p', { className: 'mono' }, 'None'));
+        tcpCard.appendChild(html('p', { style: 'color:var(--text-muted)' }, 'No TCP ports configured'));
     }
-    view.appendChild(card);
+    view.appendChild(tcpCard);
+
+    // UDP Ports
+    var udpCard = html('div', { className: 'card' });
+    var udpHeader = html('div', { className: 'card-header' });
+    udpHeader.appendChild(html('h3', {}, 'UDP Ports'));
+    udpHeader.appendChild(html('span', { className: 'badge badge-info' },
+        (chain.udp_ports || []).length + ' ports'));
+    udpCard.appendChild(udpHeader);
+
+    var udpPorts = chain.udp_ports || [];
+    if (udpPorts.length > 0) {
+        var uPortList = html('div', { className: 'port-list' });
+        udpPorts.forEach(function(p) {
+            uPortList.appendChild(createPortTag(p, function(port) {
+                showConfirm('Remove UDP Port', 'Remove port ' + port + ' from ' + name + '?',
+                    async function() {
+                        var r = await API.del('filter/' + name + '/udp/' + port);
+                        notify(r.error ? r.message : 'Port removed', r.error ? 'error' : 'success');
+                        renderChainDetail(name);
+                    }, 'Remove', 'btn btn-danger');
+            }));
+        });
+        udpCard.appendChild(uPortList);
+    } else {
+        udpCard.appendChild(html('p', { style: 'color:var(--text-muted)' }, 'No UDP ports configured'));
+    }
+    view.appendChild(udpCard);
 
     // Add port form
-    const addCard = html('div', { className: 'card' });
-    addCard.appendChild(html('h3', {}, 'Add Port'));
-    const portInput = html('input', { type: 'number', placeholder: 'Port (1-65535)', min: '1', max: '65535' });
-    const protoSelect = html('select', {},
+    var addCard = html('div', { className: 'card' });
+    var addHeader = html('div', { className: 'card-header' });
+    addHeader.appendChild(html('h3', {}, 'Add Port'));
+    addCard.appendChild(addHeader);
+
+    var portInput = html('input', {
+        type: 'number',
+        placeholder: 'Port (1-65535)',
+        min: '1',
+        max: '65535',
+        style: 'width:160px'
+    });
+    var protoSelect = html('select', {},
         html('option', { value: 'tcp' }, 'TCP'),
         html('option', { value: 'udp' }, 'UDP'));
-    const addBtn = html('button', {
-        className: 'btn btn-primary',
-        onclick: async () => {
-            const port = parseInt(portInput.value);
-            if (!port || port < 1 || port > 65535) { notify('Invalid port', 'error'); return; }
-            const proto = protoSelect.value;
-            const r = await API.post(`filter/${name}/${proto}`, { port });
-            notify(r.error ? r.message : r.data.message, r.error ? 'error' : 'success');
-            renderChainDetail(name);
+    var addBtn = html('button', { className: 'btn btn-primary' }, 'Add Port');
+    addBtn.addEventListener('click', async function() {
+        var port = parseInt(portInput.value);
+        if (!port || port < 1 || port > 65535) {
+            notify('Invalid port number (1-65535)', 'error');
+            return;
         }
-    }, 'Add');
-    const row = html('div', { className: 'btn-group' });
-    row.appendChild(portInput);
-    row.appendChild(protoSelect);
-    row.appendChild(addBtn);
-    addCard.appendChild(row);
+        var proto = protoSelect.value;
+        var r = await API.post('filter/' + name + '/' + proto, { port: port });
+        notify(r.error ? r.message : (r.data || {}).message || 'Port added',
+               r.error ? 'error' : 'success');
+        renderChainDetail(name);
+    });
+
+    // Enter key support
+    portInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') addBtn.click();
+    });
+
+    var formRow = html('div', { className: 'form-row' });
+    formRow.appendChild(portInput);
+    formRow.appendChild(protoSelect);
+    formRow.appendChild(addBtn);
+    addCard.appendChild(formRow);
     view.appendChild(addCard);
 }
 
+// --- NAT ---
 async function renderNat() {
-    const res = await API.get('nat');
-    const nat = res.data || {};
+    view.innerHTML = '';
+    view.appendChild(createLoading('Loading NAT rules...'));
+
+    var res = await API.get('nat');
+    var nat = res.data || {};
 
     view.innerHTML = '';
-    view.appendChild(html('h2', {}, 'NAT Rules'));
 
-    const postCard = html('div', { className: 'card' });
-    postCard.appendChild(html('h3', {}, 'Postrouting (MASQUERADE / SNAT)'));
-    const postRules = nat.postrouting || [];
-    if (postRules.length > 0) {
-        postCard.appendChild(createTable(
+    var postRules = nat.postrouting || [];
+    var preRules = nat.prerouting || [];
+
+    var tabs = [
+        { key: 'postrouting', label: 'Postrouting', count: postRules.length },
+        { key: 'prerouting', label: 'Prerouting', count: preRules.length }
+    ];
+
+    var tabContainer = createTabBar(tabs, function(key, contentArea) {
+        contentArea.innerHTML = '';
+        if (key === 'postrouting') {
+            renderNatPostrouting(postRules, contentArea);
+        } else {
+            renderNatPrerouting(preRules, contentArea);
+        }
+    });
+    view.appendChild(tabContainer);
+}
+
+function renderNatPostrouting(rules, container) {
+    container.appendChild(html('p', { className: 'section-desc mb-4' },
+        'Source NAT rules for outbound traffic (MASQUERADE / SNAT)'));
+
+    if (rules.length > 0) {
+        var rows = rules.map(function(r) {
+            var typeBadge;
+            if (r.type === 'masquerade' || r.type === 'MASQUERADE') {
+                typeBadge = html('span', { className: 'badge badge-accent' }, r.type);
+            } else if (r.type === 'snat' || r.type === 'SNAT') {
+                typeBadge = html('span', { className: 'badge badge-warning' }, r.type);
+            } else {
+                typeBadge = html('span', { className: 'badge badge-muted' }, r.type || 'N/A');
+            }
+            return [r.src || '-', r.oif || '-', typeBadge, r.comment || '-'];
+        });
+        var table = createFilterableTable(
             ['Source', 'Out Interface', 'Type', 'Comment'],
-            postRules.map(r => [r.src, r.oif, r.type, r.comment])
-        ));
+            rows, 'Search postrouting...');
+        container.appendChild(table);
     } else {
-        postCard.appendChild(html('p', {}, 'No postrouting rules configured. NAT masquerade is auto-generated from LAN ranges.'));
+        container.appendChild(createEmptyState(
+            'No postrouting rules configured. NAT masquerade is auto-generated from LAN ranges.'));
     }
-    view.appendChild(postCard);
-
-    const preCard = html('div', { className: 'card' });
-    preCard.appendChild(html('h3', {}, 'Prerouting (DNAT)'));
-    const preRules = nat.prerouting || [];
-    if (preRules.length > 0) {
-        preCard.appendChild(createTable(
-            ['In Interface', 'Protocol', 'Port', 'Dest IP', 'Dest Port', 'Comment'],
-            preRules.map(r => [r.iif, r.protocol, r.dport, r.to_dest_ip, r.to_dest_port, r.comment])
-        ));
-    } else {
-        preCard.appendChild(html('p', {}, 'No prerouting rules.'));
-    }
-    view.appendChild(preCard);
 }
 
+function renderNatPrerouting(rules, container) {
+    container.appendChild(html('p', { className: 'section-desc mb-4' },
+        'Destination NAT rules for inbound port forwarding (DNAT)'));
+
+    if (rules.length > 0) {
+        var rows = rules.map(function(r) {
+            var protoBadge = html('span', { className: 'badge badge-info' },
+                (r.protocol || 'tcp').toUpperCase());
+            return [
+                r.iif || '-',
+                protoBadge,
+                String(r.dport || '-'),
+                r.to_dest_ip || '-',
+                String(r.to_dest_port || '-'),
+                r.comment || '-'
+            ];
+        });
+        var table = createFilterableTable(
+            ['In Interface', 'Protocol', 'Port', 'Dest IP', 'Dest Port', 'Comment'],
+            rows, 'Search prerouting...');
+        container.appendChild(table);
+    } else {
+        container.appendChild(createEmptyState('No prerouting rules configured.'));
+    }
+}
+
+// --- Configuration ---
 async function renderConfig() {
-    const res = await API.get('config');
-    const cfg = res.data || {};
+    view.innerHTML = '';
+    view.appendChild(createLoading('Loading configuration...'));
+
+    var res = await API.get('config');
+    var cfg = res.data || {};
 
     view.innerHTML = '';
-    view.appendChild(html('h2', {}, 'Configuration'));
 
-    const card = html('div', { className: 'card' });
-    const pre = html('pre', {}, JSON.stringify(cfg, null, 2));
-    card.appendChild(pre);
-    view.appendChild(card);
+    var tabs = [
+        { key: 'sections', label: 'Sections' },
+        { key: 'raw', label: 'Raw JSON' }
+    ];
+
+    var tabContainer = createTabBar(tabs, function(key, contentArea) {
+        contentArea.innerHTML = '';
+        if (key === 'sections') {
+            renderConfigSections(cfg, contentArea);
+        } else {
+            renderConfigRaw(cfg, contentArea);
+        }
+    });
+    view.appendChild(tabContainer);
 }
 
+function renderConfigSections(cfg, container) {
+    var sections = [
+        { key: 'version', title: 'General', fields: ['version', 'language', 'backend'] },
+        { key: 'interfaces', title: 'Interfaces', fields: ['if_wan', 'if_lan', 'if_dmz', 'if_vpns'] },
+        { key: 'dns', title: 'DNS', fields: ['dns1', 'dns2'] },
+        { key: 'ranges', title: 'Network Ranges', fields: ['range_lan', 'range_dmz', 'range_vpns'] },
+        { key: 'sysctl', title: 'Sysctl', fields: ['ip_forward', 'rp_filter', 'syn_cookies', 'log_martians', 'icmp_redirects'] }
+    ];
+
+    sections.forEach(function(section, idx) {
+        var collapse = createCollapsible(section.title, function() {
+            var content = html('div');
+            section.fields.forEach(function(field) {
+                var value = cfg[field];
+                if (value === undefined) return;
+                var row = html('div', { className: 'flex justify-between items-center', style: 'padding:8px 0;border-bottom:1px solid var(--border)' });
+                row.appendChild(html('span', { className: 'form-label', style: 'margin:0;text-transform:none' }, field));
+                if (typeof value === 'boolean') {
+                    row.appendChild(html('span', { className: value ? 'badge badge-success' : 'badge badge-muted' },
+                        value ? 'Enabled' : 'Disabled'));
+                } else {
+                    row.appendChild(html('span', { className: 'mono' }, String(value)));
+                }
+                content.appendChild(row);
+            });
+            return content;
+        }, idx === 0);
+        container.appendChild(collapse);
+    });
+
+    // Filter chains section
+    var chainCollapse = createCollapsible('Filter Chains (25)', function() {
+        var content = html('div');
+        var zones = ['fw', 'lan', 'wan', 'dmz', 'vpns'];
+        var filterCfg = cfg.filter || {};
+        zones.forEach(function(src) {
+            zones.forEach(function(dst) {
+                var name = src + '2' + dst;
+                var chain = filterCfg[name] || {};
+                var tcp = chain.tcp_ports || [];
+                var udp = chain.udp_ports || [];
+                if (tcp.length === 0 && udp.length === 0) return;
+                var row = html('div', { style: 'padding:8px 0;border-bottom:1px solid var(--border)' });
+                row.appendChild(html('span', { style: 'font-weight:600;margin-right:12px' }, name));
+                if (tcp.length > 0) {
+                    row.appendChild(html('span', { className: 'badge badge-accent', style: 'margin-right:6px' },
+                        'TCP: ' + tcp.join(', ')));
+                }
+                if (udp.length > 0) {
+                    row.appendChild(html('span', { className: 'badge badge-info' },
+                        'UDP: ' + udp.join(', ')));
+                }
+                content.appendChild(row);
+            });
+        });
+        if (content.children.length === 0) {
+            content.appendChild(html('p', { style: 'color:var(--text-muted)' }, 'No filter chains with configured ports'));
+        }
+        return content;
+    }, false);
+    container.appendChild(chainCollapse);
+
+    // NAT section
+    var natCollapse = createCollapsible('NAT', function() {
+        var content = html('div');
+        var natCfg = cfg.nat || {};
+        var post = natCfg.postrouting || [];
+        var pre = natCfg.prerouting || [];
+        content.appendChild(html('p', {},
+            'Postrouting rules: ' + post.length + ' | Prerouting rules: ' + pre.length));
+        return content;
+    }, false);
+    container.appendChild(natCollapse);
+}
+
+function renderConfigRaw(cfg, container) {
+    container.appendChild(html('p', { className: 'section-desc mb-3' },
+        'Full JSON configuration (read-only)'));
+    var pre = html('pre', {}, JSON.stringify(cfg, null, 2));
+    container.appendChild(pre);
+}
+
+// --- Rules / Logs ---
 async function renderLogs() {
     view.innerHTML = '';
-    view.appendChild(html('h2', {}, 'Firewall Rules'));
+    view.appendChild(createLoading('Loading firewall rules...'));
 
-    const res = await API.get('firewall/rules');
-    const rules = (res.data || {}).ruleset || 'No rules loaded';
+    var res = await API.get('firewall/rules');
+    var rules = ((res.data || {}).ruleset) || 'No rules loaded';
 
-    const card = html('div', { className: 'card' });
+    view.innerHTML = '';
+
+    var card = html('div', { className: 'card' });
+    var cardHeader = html('div', { className: 'card-header' });
+    cardHeader.appendChild(html('h3', {}, 'Active Ruleset'));
+    var copyBtn = html('button', { className: 'btn btn-sm' }, 'Copy');
+    copyBtn.addEventListener('click', function() {
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(rules).then(function() {
+                notify('Copied to clipboard', 'info');
+            });
+        }
+    });
+    cardHeader.appendChild(copyBtn);
+    card.appendChild(cardHeader);
     card.appendChild(html('pre', {}, rules));
     view.appendChild(card);
 }
 
-// Router
+/* ============================================================
+   Router
+   ============================================================ */
 function navigate() {
-    const hash = location.hash.slice(1) || 'dashboard';
-    document.querySelectorAll('#sidebar a').forEach(a => {
-        a.classList.toggle('active', a.getAttribute('href') === '#' + hash);
+    var hash = location.hash.slice(1) || 'dashboard';
+    var route = routes[hash] || routes.dashboard;
+
+    // Update page title
+    pageTitle.textContent = route.title;
+    document.title = route.title + ' - Firewallo';
+
+    // Update active nav
+    document.querySelectorAll('.nav-item').forEach(function(a) {
+        a.classList.toggle('active', a.getAttribute('data-view') === hash);
     });
-    const fn = routes[hash] || renderDashboard;
-    fn();
+
+    // Render view with animation
+    view.style.animation = 'none';
+    /* Force reflow */
+    void view.offsetHeight;
+    view.style.animation = '';
+    route.render();
 }
 
 window.addEventListener('hashchange', navigate);
