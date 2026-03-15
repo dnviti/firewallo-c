@@ -1,6 +1,7 @@
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/validate.h"
+#include "firewallo/webhook.h"
 #include "firewallo/util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -557,6 +558,49 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
         if (v) cfg->block_isatap = json_bool_value(v);
     }
 
+    /* Webhooks */
+    json_value_t *webhooks = json_object_get(root, "webhooks");
+    if (webhooks && webhooks->type == JSON_ARRAY) {
+        cfg->webhook_count = 0;
+        int wn = json_array_count(webhooks);
+        for (int i = 0; i < wn && cfg->webhook_count < FW_MAX_WEBHOOKS; i++) {
+            json_value_t *wh = json_array_get(webhooks, i);
+            if (!wh || wh->type != JSON_OBJECT) continue;
+            fw_webhook_t *w = &cfg->webhooks[cfg->webhook_count];
+            memset(w, 0, sizeof(*w));
+
+            const char *ws;
+            ws = json_string_value(json_object_get(wh, "url"));
+            if (ws) fw_strlcpy(w->url, ws, sizeof(w->url));
+
+            ws = json_string_value(json_object_get(wh, "secret"));
+            if (ws) fw_strlcpy(w->secret, ws, sizeof(w->secret));
+
+            json_value_t *ev = json_object_get(wh, "events");
+            if (ev && ev->type == JSON_NUMBER)
+                w->events = (unsigned int)json_number_value(ev);
+            else
+                w->events = WH_EVENT_ALL;
+
+            json_value_t *en = json_object_get(wh, "enabled");
+            if (en)
+                w->enabled = json_bool_value(en);
+            else
+                w->enabled = 1;
+
+            json_value_t *rc = json_object_get(wh, "retry_count");
+            if (rc && rc->type == JSON_NUMBER)
+                w->retry_count = (int)json_number_value(rc);
+            else
+                w->retry_count = 3;
+
+            ws = json_string_value(json_object_get(wh, "comment"));
+            if (ws) fw_strlcpy(w->comment, ws, sizeof(w->comment));
+
+            cfg->webhook_count++;
+        }
+    }
+
     json_free(root);
     return 0;
 }
@@ -852,6 +896,21 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
     json_object_set(ipv6_transition, "block_isatap", json_new_bool(cfg->block_isatap));
     json_object_set(root, "ipv6_transition", ipv6_transition);
 
+    /* Webhooks */
+    json_value_t *webhooks_arr = json_new_array();
+    for (int i = 0; i < cfg->webhook_count; i++) {
+        const fw_webhook_t *w = &cfg->webhooks[i];
+        json_value_t *wobj = json_new_object();
+        json_object_set(wobj, "url", json_new_string(w->url));
+        json_object_set(wobj, "secret", json_new_string(w->secret));
+        json_object_set(wobj, "events", json_new_number(w->events));
+        json_object_set(wobj, "enabled", json_new_bool(w->enabled));
+        json_object_set(wobj, "retry_count", json_new_number(w->retry_count));
+        json_object_set(wobj, "comment", json_new_string(w->comment));
+        json_array_append(webhooks_arr, wobj);
+    }
+    json_object_set(root, "webhooks", webhooks_arr);
+
     return root;
 }
 
@@ -987,6 +1046,27 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
         if (!fw_validate_comment(r->comment)) {
             snprintf(err, errlen, "invalid comment in NAT prerouting rule %d", i);
+            return -1;
+        }
+    }
+
+    /* Validate webhooks */
+    for (int i = 0; i < cfg->webhook_count; i++) {
+        const fw_webhook_t *w = &cfg->webhooks[i];
+        if (!fw_webhook_validate_url(w->url)) {
+            snprintf(err, errlen, "invalid webhook URL at index %d: %s", i, w->url);
+            return -1;
+        }
+        if (!fw_webhook_validate_events(w->events)) {
+            snprintf(err, errlen, "invalid webhook events mask at index %d: %u", i, w->events);
+            return -1;
+        }
+        if (!fw_webhook_validate_secret(w->secret)) {
+            snprintf(err, errlen, "webhook secret at index %d contains control characters", i);
+            return -1;
+        }
+        if (w->retry_count < 0 || w->retry_count > FW_MAX_WEBHOOK_RETRY) {
+            snprintf(err, errlen, "invalid webhook retry_count at index %d: %d", i, w->retry_count);
             return -1;
         }
     }
