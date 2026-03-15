@@ -189,6 +189,22 @@ static void test_alias_validation(void)
     /* Invalid port entry */
     strcpy(cfg.aliases[0].entries[0], "not_a_port");
     ASSERT(fw_config_validate(&cfg, err, sizeof(err)) != 0, "invalid port entry fails");
+
+    /* Port range rejected (only single numeric ports allowed) */
+    strcpy(cfg.aliases[0].entries[0], "80");
+    strcpy(cfg.aliases[0].entries[1], "1024:2048");
+    cfg.aliases[0].entry_count = 2;
+    ASSERT(fw_config_validate(&cfg, err, sizeof(err)) != 0, "port range entry rejected");
+
+    /* "any" rejected in port alias */
+    strcpy(cfg.aliases[0].entries[0], "any");
+    cfg.aliases[0].entry_count = 1;
+    ASSERT(fw_config_validate(&cfg, err, sizeof(err)) != 0, "any entry rejected in port alias");
+
+    /* Restore valid state */
+    strcpy(cfg.aliases[0].entries[0], "80");
+    cfg.aliases[0].entry_count = 1;
+    ASSERT(fw_config_validate(&cfg, err, sizeof(err)) == 0, "single port entry passes");
 }
 
 int main(void)

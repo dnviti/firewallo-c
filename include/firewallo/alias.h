@@ -22,4 +22,8 @@ int fw_alias_resolve_port(const fw_config_t *cfg, const char *ref,
 /* Validate an alias name (alphanumeric and underscore, starts with letter). */
 int fw_alias_validate_name(const char *name);
 
+/* Check if an alias is referenced by any filter rules (src_addr or dst_addr).
+   Returns 1 if referenced, 0 if not. */
+int fw_alias_is_referenced(const fw_config_t *cfg, const char *name);
+
 #endif /* FIREWALLO_ALIAS_H */

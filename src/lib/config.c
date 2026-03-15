@@ -1147,8 +1147,8 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
                     return -1;
                 }
             } else {
-                if (!fw_validate_port_range(a->entries[e])) {
-                    snprintf(err, errlen, "invalid port entry '%s' in alias '%s'",
+                if (!fw_validate_port_single(a->entries[e])) {
+                    snprintf(err, errlen, "invalid port entry '%s' in alias '%s' (single numeric port required)",
                              a->entries[e], a->name);
                     return -1;
                 }

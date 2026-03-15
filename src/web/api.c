@@ -1082,31 +1082,58 @@ static void api_create_alias(httpd_t *srv, const http_request_t *req, http_respo
         return;
     }
 
-    fw_alias_t *a = &cfg->aliases[cfg->alias_count];
-    memset(a, 0, sizeof(*a));
-    fw_strlcpy(a->name, name, sizeof(a->name));
-
+    /* Require explicit valid type */
     const char *type_str = json_string_value(json_object_get(body, "type"));
-    if (type_str && strcmp(type_str, "port") == 0)
-        a->type = ALIAS_TYPE_PORT;
-    else
-        a->type = ALIAS_TYPE_IP;
+    if (!type_str || (strcmp(type_str, "ip") != 0 && strcmp(type_str, "port") != 0)) {
+        json_free(body);
+        api_error(resp, 400, "Field 'type' must be 'ip' or 'port'");
+        return;
+    }
+
+    fw_alias_t a;
+    memset(&a, 0, sizeof(a));
+    fw_strlcpy(a.name, name, sizeof(a.name));
+    a.type = (strcmp(type_str, "port") == 0) ? ALIAS_TYPE_PORT : ALIAS_TYPE_IP;
 
     json_value_t *entries = json_object_get(body, "entries");
     if (entries && entries->type == JSON_ARRAY) {
         int n = json_array_count(entries);
-        for (int i = 0; i < n && a->entry_count < FW_MAX_ALIAS_ENTRIES; i++) {
+        for (int i = 0; i < n && a.entry_count < FW_MAX_ALIAS_ENTRIES; i++) {
             const char *e = json_string_value(json_array_get(entries, i));
             if (e) {
-                fw_strlcpy(a->entries[a->entry_count], e, FW_MAX_ADDR);
-                a->entry_count++;
+                fw_strlcpy(a.entries[a.entry_count], e, FW_MAX_ADDR);
+                a.entry_count++;
+            }
+        }
+    }
+
+    /* Validate entries match type */
+    if (a.entry_count == 0) {
+        json_free(body);
+        api_error(resp, 400, "Alias must have at least one entry");
+        return;
+    }
+    for (int i = 0; i < a.entry_count; i++) {
+        if (a.type == ALIAS_TYPE_IP) {
+            if (!fw_validate_ipv4(a.entries[i]) &&
+                !fw_validate_ipv4_cidr(a.entries[i])) {
+                json_free(body);
+                api_error(resp, 400, "Invalid IP entry in alias");
+                return;
+            }
+        } else {
+            if (!fw_validate_port_single(a.entries[i])) {
+                json_free(body);
+                api_error(resp, 400, "Invalid port entry in alias (single numeric port required)");
+                return;
             }
         }
     }
 
     const char *comment = json_string_value(json_object_get(body, "comment"));
-    if (comment) fw_strlcpy(a->comment, comment, sizeof(a->comment));
+    if (comment) fw_strlcpy(a.comment, comment, sizeof(a.comment));
 
+    cfg->aliases[cfg->alias_count] = a;
     cfg->alias_count++;
     json_free(body);
 
@@ -1135,18 +1162,45 @@ static void api_update_alias(httpd_t *srv, const char *name,
     json_value_t *body = json_parse(req->body, err, sizeof(err));
     if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
 
-    /* Update entries if provided */
+    /* Parse and validate entries before applying */
     json_value_t *entries = json_object_get(body, "entries");
     if (entries && entries->type == JSON_ARRAY) {
-        a->entry_count = 0;
+        /* Validate entries in a temporary buffer before overwriting */
+        char tmp_entries[FW_MAX_ALIAS_ENTRIES][FW_MAX_ADDR];
+        int tmp_count = 0;
         int n = json_array_count(entries);
-        for (int i = 0; i < n && a->entry_count < FW_MAX_ALIAS_ENTRIES; i++) {
+        for (int i = 0; i < n && tmp_count < FW_MAX_ALIAS_ENTRIES; i++) {
             const char *e = json_string_value(json_array_get(entries, i));
             if (e) {
-                fw_strlcpy(a->entries[a->entry_count], e, FW_MAX_ADDR);
-                a->entry_count++;
+                fw_strlcpy(tmp_entries[tmp_count], e, FW_MAX_ADDR);
+                tmp_count++;
             }
         }
+        if (tmp_count == 0) {
+            json_free(body);
+            api_error(resp, 400, "Alias must have at least one entry");
+            return;
+        }
+        for (int i = 0; i < tmp_count; i++) {
+            if (a->type == ALIAS_TYPE_IP) {
+                if (!fw_validate_ipv4(tmp_entries[i]) &&
+                    !fw_validate_ipv4_cidr(tmp_entries[i])) {
+                    json_free(body);
+                    api_error(resp, 400, "Invalid IP entry in alias");
+                    return;
+                }
+            } else {
+                if (!fw_validate_port_single(tmp_entries[i])) {
+                    json_free(body);
+                    api_error(resp, 400, "Invalid port entry in alias (single numeric port required)");
+                    return;
+                }
+            }
+        }
+        /* Validation passed, apply entries */
+        a->entry_count = tmp_count;
+        for (int i = 0; i < tmp_count; i++)
+            fw_strlcpy(a->entries[i], tmp_entries[i], FW_MAX_ADDR);
     }
 
     /* Update comment if provided */
@@ -1172,6 +1226,12 @@ static void api_delete_alias(httpd_t *srv, const char *name, http_response_t *re
         }
     }
     if (found < 0) { api_error(resp, 404, "Alias not found"); return; }
+
+    /* Check if alias is referenced by any filter rules */
+    if (fw_alias_is_referenced(cfg, name)) {
+        api_error(resp, 409, "Alias is referenced by filter rules and cannot be deleted");
+        return;
+    }
 
     /* Remove by shifting */
     for (int i = found; i < cfg->alias_count - 1; i++)

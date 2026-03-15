@@ -69,6 +69,30 @@ int fw_alias_resolve_port(const fw_config_t *cfg, const char *ref,
     return count;
 }
 
+int fw_alias_is_referenced(const fw_config_t *cfg, const char *name)
+{
+    if (!cfg || !name)
+        return 0;
+
+    /* Build the reference string "$NAME" */
+    char ref[FW_MAX_ALIAS_NAME + 1];
+    ref[0] = '$';
+    fw_strlcpy(ref + 1, name, sizeof(ref) - 1);
+
+    /* Scan all filter chains for rules referencing this alias */
+    for (int c = 0; c < FW_CHAIN_COUNT; c++) {
+        const fw_chain_t *ch = &cfg->chains[c];
+        for (int i = 0; i < ch->rule_count; i++) {
+            const fw_filter_rule_t *r = &ch->rules[i];
+            if (strcmp(r->src_addr, ref) == 0)
+                return 1;
+            if (strcmp(r->dst_addr, ref) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 int fw_alias_validate_name(const char *name)
 {
     if (!name || !*name)

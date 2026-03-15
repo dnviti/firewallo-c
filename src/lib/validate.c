@@ -258,6 +258,21 @@ int fw_validate_port_range(const char *range)
     return fw_validate_port(port);
 }
 
+int fw_validate_port_single(const char *port_str)
+{
+    if (!port_str || !*port_str)
+        return 0;
+
+    /* Must be all digits */
+    for (const char *p = port_str; *p; p++) {
+        if (!isdigit((unsigned char)*p))
+            return 0;
+    }
+
+    int port = atoi(port_str);
+    return fw_validate_port(port);
+}
+
 int fw_validate_interface(const char *ifname)
 {
     if (!ifname || !*ifname)
