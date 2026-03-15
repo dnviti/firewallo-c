@@ -23,7 +23,7 @@ static void print_usage(void)
         "\n"
         "Options:\n"
         "  -p, --port <port>         Listen port (default: 8080)\n"
-        "  -b, --bind <addr>         Bind address (default: 127.0.0.1)\n"
+        "  -b, --bind <addr>         Bind address (default: 0.0.0.0)\n"
         "  -w, --webroot <path>      Static files directory (default: /usr/local/share/firewallo/web)\n"
         "  -c, --config <path>       Config file (default: /etc/firewallo/firewallo.json)\n"
         "  -t, --token-file <path>   API token file for authentication (default: none, auth disabled)\n"
@@ -35,7 +35,7 @@ static void print_usage(void)
 int main(int argc, char *argv[])
 {
     int port = 8080;
-    const char *bind_addr = "127.0.0.1";
+    const char *bind_addr = "0.0.0.0";
     const char *webroot = "/usr/local/share/firewallo/web";
     const char *config_path = "/etc/firewallo/firewallo.json";
     const char *token_path = NULL;

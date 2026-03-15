@@ -3,12 +3,6 @@
 
 #include "firewallo/types.h"
 
-/* ── Validation ──────────────────────────────────────────────────── */
-
-/* Validate a tunnel name for safe use in shell commands and file paths.
- * Returns 1 if valid (alphanumeric + -._), 0 if invalid. */
-int fw_vpn_validate_tunnel_name(const char *name);
-
 /* ── VPN config generation ────────────────────────────────────────── */
 
 /* Generate a WireGuard keypair. Writes base64 keys into buffers. Returns 0 on success. */

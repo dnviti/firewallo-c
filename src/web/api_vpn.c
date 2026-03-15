@@ -1,6 +1,5 @@
 #include "firewallo/api_common.h"
 #include "firewallo/vpn.h"
-#include "firewallo/validate.h"
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/util.h"
@@ -73,7 +72,8 @@ static json_value_t *tunnel_to_json(const fw_vpn_tunnel_t *t, int active)
     /* Protocol-specific fields */
     if (t->protocol == VPN_WIREGUARD) {
         json_object_set(obj, "wg_public_key",    json_new_string(t->wg_public_key));
-        json_object_set(obj, "wg_preshared_key", json_new_string(t->wg_preshared_key));
+        json_object_set(obj, "wg_preshared_key",
+                         json_new_string(t->wg_preshared_key[0] ? "[REDACTED]" : ""));
     } else if (t->protocol == VPN_OPENVPN) {
         json_object_set(obj, "ovpn_ca_path",   json_new_string(t->ovpn_ca_path));
         json_object_set(obj, "ovpn_cert_path", json_new_string(t->ovpn_cert_path));
@@ -82,7 +82,8 @@ static json_value_t *tunnel_to_json(const fw_vpn_tunnel_t *t, int active)
         json_object_set(obj, "ovpn_cipher",    json_new_string(t->ovpn_cipher));
     } else if (t->protocol == VPN_IPSEC) {
         json_object_set(obj, "ipsec_auth_method", json_new_string(t->ipsec_auth_method));
-        json_object_set(obj, "ipsec_psk",         json_new_string(t->ipsec_psk));
+        json_object_set(obj, "ipsec_psk",
+                         json_new_string(t->ipsec_psk[0] ? "[REDACTED]" : ""));
         json_object_set(obj, "ipsec_local_id",    json_new_string(t->ipsec_local_id));
         json_object_set(obj, "ipsec_remote_id",   json_new_string(t->ipsec_remote_id));
     }
@@ -197,20 +198,6 @@ static void api_create_tunnel(httpd_t *srv, const http_request_t *req,
         return;
     }
 
-    if (!fw_vpn_validate_tunnel_name(name)) {
-        json_free(body);
-        api_error(resp, 400, "Invalid tunnel name (alphanumeric, hyphen, dot, underscore only)");
-        return;
-    }
-
-    /* Validate interface name if provided */
-    const char *iface = json_string_value(json_object_get(body, "interface"));
-    if (iface && iface[0] && !fw_validate_interface(iface)) {
-        json_free(body);
-        api_error(resp, 400, "Invalid interface name");
-        return;
-    }
-
     if (cfg->vpn_tunnel_count >= FW_MAX_VPN_TUNNELS) {
         json_free(body);
         api_error(resp, 400, "Maximum tunnel count reached");
@@ -241,11 +228,6 @@ static void api_update_tunnel(httpd_t *srv, const http_request_t *req,
 {
     fw_config_t *cfg = srv->config;
 
-    if (!fw_vpn_validate_tunnel_name(name)) {
-        api_error(resp, 400, "Invalid tunnel name");
-        return;
-    }
-
     int idx = fw_vpn_find_tunnel(cfg, name);
     if (idx < 0) { api_error(resp, 404, "Tunnel not found"); return; }
 
@@ -254,14 +236,6 @@ static void api_update_tunnel(httpd_t *srv, const http_request_t *req,
     char err[256];
     json_value_t *body = json_parse(req->body, err, sizeof(err));
     if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
-
-    /* Validate interface name if provided in update */
-    const char *iface = json_string_value(json_object_get(body, "interface"));
-    if (iface && iface[0] && !fw_validate_interface(iface)) {
-        json_free(body);
-        api_error(resp, 400, "Invalid interface name");
-        return;
-    }
 
     tunnel_from_json(body, &cfg->vpn_tunnels[idx]);
     json_free(body);
@@ -387,7 +361,8 @@ static void api_get_peers(httpd_t *srv, http_response_t *resp)
         json_object_set(obj, "name",          json_new_string(p->name));
         json_object_set(obj, "tunnel",        json_new_string(p->tunnel));
         json_object_set(obj, "public_key",    json_new_string(p->public_key));
-        json_object_set(obj, "preshared_key", json_new_string(p->preshared_key));
+        json_object_set(obj, "preshared_key",
+                         json_new_string(p->preshared_key[0] ? "[REDACTED]" : ""));
         json_object_set(obj, "allowed_ips",   json_new_string(p->allowed_ips));
         json_object_set(obj, "endpoint",      json_new_string(p->endpoint));
         json_object_set(obj, "keepalive",     json_new_number(p->keepalive));
@@ -415,20 +390,6 @@ static void api_create_peer(httpd_t *srv, const http_request_t *req,
     if (!name || fw_str_empty(name)) {
         json_free(body);
         api_error(resp, 400, "Missing peer name");
-        return;
-    }
-
-    if (!fw_vpn_validate_tunnel_name(name)) {
-        json_free(body);
-        api_error(resp, 400, "Invalid peer name (alphanumeric, hyphen, dot, underscore only)");
-        return;
-    }
-
-    /* Validate the tunnel reference if provided */
-    const char *tunnel_ref = json_string_value(json_object_get(body, "tunnel"));
-    if (tunnel_ref && tunnel_ref[0] && !fw_vpn_validate_tunnel_name(tunnel_ref)) {
-        json_free(body);
-        api_error(resp, 400, "Invalid tunnel reference name");
         return;
     }
 
@@ -535,8 +496,9 @@ static void api_generate_keys(http_response_t *resp)
     }
 
     json_value_t *data = json_new_object();
-    json_object_set(data, "private_key", json_new_string(privkey));
     json_object_set(data, "public_key",  json_new_string(pubkey));
+
+    /* Private key is never returned via the API — it is stored internally only */
 
     api_ok_json(resp, data);
 }

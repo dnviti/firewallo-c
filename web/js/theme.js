@@ -4,26 +4,18 @@
    ============================================================ */
 
 // ---- Polling system ----
-let activePollerId = 0;
+let activePoller = null;
 
 function startPolling(fn, interval) {
     stopPolling();
-    const id = ++activePollerId;
-    const delay = interval || 5000;
-    (async function loop() {
-        while (id === activePollerId) {
-            try {
-                await fn();
-            } catch (e) {
-                console.error('Polling error:', e);
-            }
-            await new Promise(r => setTimeout(r, delay));
-        }
-    })();
+    activePoller = setInterval(fn, interval || 5000);
 }
 
 function stopPolling() {
-    activePollerId++;
+    if (activePoller) {
+        clearInterval(activePoller);
+        activePoller = null;
+    }
 }
 
 // ---- Double confirmation helper ----

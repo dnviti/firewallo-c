@@ -1,4 +1,5 @@
 #include "firewallo/api.h"
+#include "firewallo/api_common.h"
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/rule_compiler.h"
@@ -16,17 +17,11 @@
 #include <unistd.h>
 #include <time.h>
 
-/* Forward declarations for domain handlers from split API files */
-int api_handle_vpn(httpd_t *srv, const http_request_t *req,
-                   http_response_t *resp, const char *path, const char *method);
-int api_handle_system(httpd_t *srv, const http_request_t *req,
-                      http_response_t *resp, const char *path, const char *method);
-
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
 static const char API_ERR_FALLBACK[] = "{\"error\":true,\"message\":\"internal error\"}";
 
-static void api_error(http_response_t *resp, int status, const char *msg)
+void api_error(http_response_t *resp, int status, const char *msg)
 {
     json_value_t *envelope = json_new_object();
     if (!envelope) {
@@ -61,7 +56,7 @@ static void api_error(http_response_t *resp, int status, const char *msg)
     http_response_set_json(resp, status, json);
 }
 
-static void api_ok_json(http_response_t *resp, json_value_t *data)
+void api_ok_json(http_response_t *resp, json_value_t *data)
 {
     json_value_t *envelope = json_new_object();
     json_object_set(envelope, "error", json_new_bool(0));
@@ -71,7 +66,7 @@ static void api_ok_json(http_response_t *resp, json_value_t *data)
     http_response_set_json(resp, 200, json);
 }
 
-static void api_ok_msg(http_response_t *resp, const char *msg)
+void api_ok_msg(http_response_t *resp, const char *msg)
 {
     json_value_t *data = json_new_object();
     json_object_set(data, "message", json_new_string(msg));
@@ -88,6 +83,12 @@ static int save_config(httpd_t *srv, http_response_t *resp)
     return 0;
 }
 
+/* Non-static alias for api_vpn.c and other API modules */
+int api_save_config(httpd_t *srv, http_response_t *resp)
+{
+    return save_config(srv, resp);
+}
+
 /* Extract path segment after prefix. Returns pointer into path string. */
 static const char *path_after(const char *path, const char *prefix)
 {
@@ -95,6 +96,22 @@ static const char *path_after(const char *path, const char *prefix)
     if (strncmp(path, prefix, plen) == 0)
         return path + plen;
     return NULL;
+}
+
+/* Non-static alias for api_vpn.c and other API modules */
+const char *api_path_after(const char *path, const char *prefix)
+{
+    return path_after(path, prefix);
+}
+
+int api_read_sysctl(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int val = 0;
+    if (fscanf(f, "%d", &val) != 1) val = -1;
+    fclose(f);
+    return val;
 }
 
 /* ── GET /api/v1/version ───────────────────────────────────────────── */
@@ -112,12 +129,29 @@ static void api_version(httpd_t *srv, http_response_t *resp)
 
 static void api_get_config(httpd_t *srv, http_response_t *resp)
 {
-    /* Make a copy and redact webhook secrets before serialization */
+    /* Make a copy and redact secrets before serialization */
     fw_config_t redacted = *srv->config;
     for (int i = 0; i < redacted.webhook_count; i++) {
         if (redacted.webhooks[i].secret[0])
             fw_strlcpy(redacted.webhooks[i].secret, "***",
                         sizeof(redacted.webhooks[i].secret));
+    }
+    /* Redact VPN private keys and PSKs */
+    for (int i = 0; i < redacted.vpn_tunnel_count; i++) {
+        if (redacted.vpn_tunnels[i].wg_private_key[0])
+            fw_strlcpy(redacted.vpn_tunnels[i].wg_private_key, "[REDACTED]",
+                        sizeof(redacted.vpn_tunnels[i].wg_private_key));
+        if (redacted.vpn_tunnels[i].wg_preshared_key[0])
+            fw_strlcpy(redacted.vpn_tunnels[i].wg_preshared_key, "[REDACTED]",
+                        sizeof(redacted.vpn_tunnels[i].wg_preshared_key));
+        if (redacted.vpn_tunnels[i].ipsec_psk[0])
+            fw_strlcpy(redacted.vpn_tunnels[i].ipsec_psk, "[REDACTED]",
+                        sizeof(redacted.vpn_tunnels[i].ipsec_psk));
+    }
+    for (int i = 0; i < redacted.vpn_peer_count; i++) {
+        if (redacted.vpn_peers[i].preshared_key[0])
+            fw_strlcpy(redacted.vpn_peers[i].preshared_key, "[REDACTED]",
+                        sizeof(redacted.vpn_peers[i].preshared_key));
     }
 
     /* Serialize redacted config directly to memory — no temp files needed */
@@ -1256,15 +1290,15 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
     const char *method = req->method;
     const char *sub;
 
-    /* Backup/snapshot endpoints: /api/v1/config/snapshots... */
-    if (strncmp(path, "config/snapshots", 16) == 0) {
-        return api_handle_backup(srv, req, resp);
-    }
-
     /* GET /api/v1/version */
     if (strcmp(path, "version") == 0 && strcmp(method, "GET") == 0) {
         api_version(srv, resp);
         return 0;
+    }
+
+    /* Backup/snapshot endpoints: /api/v1/config/snapshots... */
+    if (strncmp(path, "config/snapshots", 16) == 0) {
+        return api_handle_backup(srv, req, resp);
     }
 
     /* GET/PUT /api/v1/config */
@@ -1494,17 +1528,15 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         return 0;
     }
 
-    /* VPN domain handler (from SEC-001 split) */
-    if (api_handle_vpn(srv, req, resp, path, method))
-        return 0;
-
-    /* System domain handler */
-    if (api_handle_system(srv, req, resp, path, method))
-        return 0;
-
     /* /api/v1/monitor/... */
     if ((sub = path_after(path, "monitor/")) != NULL) {
         return api_handle_monitor(srv, req, resp, sub);
+    }
+
+    /* /api/v1/vpn/... */
+    if (strncmp(path, "vpn/", 4) == 0 || strcmp(path, "vpn") == 0) {
+        if (api_handle_vpn(srv, req, resp, path, method))
+            return 0;
     }
 
     api_error(resp, 404, "API endpoint not found");

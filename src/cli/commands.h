@@ -35,21 +35,21 @@ int cmd_set_ratelimit(fw_config_t *cfg, const char *chain, const char *max_str,
                       const char *period_str, const char *ban_str,
                       const char *config_path);
 
-/* System commands */
-int cmd_list_system_interfaces(void);
-
-/* VPN commands (SEC-001) */
-int cmd_vpn_list(const fw_config_t *cfg);
-int cmd_vpn_status(const fw_config_t *cfg, const char *name);
-int cmd_vpn_start(fw_config_t *cfg, const char *name);
-int cmd_vpn_stop(fw_config_t *cfg, const char *name);
-int cmd_vpn_peers(const fw_config_t *cfg, const char *tunnel_name);
-
 /* Rollback commands (FW-0001) */
 int cmd_confirm(void);
 int cmd_start_with_rollback(fw_config_t *cfg, const char *config_path,
                             int verbose, int rollback_timeout);
 int cmd_reload_with_rollback(fw_config_t *cfg, const char *config_path,
                              int verbose, int rollback_timeout);
+
+/* System info */
+int cmd_list_system_interfaces(void);
+
+/* VPN management */
+int cmd_vpn_list(const fw_config_t *cfg);
+int cmd_vpn_status(const fw_config_t *cfg, const char *name);
+int cmd_vpn_start(fw_config_t *cfg, const char *name);
+int cmd_vpn_stop(fw_config_t *cfg, const char *name);
+int cmd_vpn_peers(const fw_config_t *cfg, const char *tunnel_name);
 
 #endif /* FIREWALLO_CLI_COMMANDS_H */

@@ -5,14 +5,12 @@
  */
 
 #include "firewallo/vpn.h"
-#include "firewallo/validate.h"
 #include "firewallo/sysctl.h"
 #include "firewallo/log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -48,60 +46,12 @@ int fw_vpn_generate_wg_keys(char *privkey, size_t privlen,
         return -1;
     }
 
-    /* Derive public key by piping private key via stdin to wg pubkey.
-     * Uses fork/exec to avoid embedding the key in a shell command string. */
-    int stdin_pipe[2], stdout_pipe[2];
-    if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
-        fw_log(LOG_WARN, "vpn: pipe() failed for wg pubkey");
-        return -1;
-    }
+    /* Derive public key from private key */
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "echo '%s' | wg pubkey 2>/dev/null", privkey);
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        fw_log(LOG_WARN, "vpn: fork() failed for wg pubkey");
-        close(stdin_pipe[0]); close(stdin_pipe[1]);
-        close(stdout_pipe[0]); close(stdout_pipe[1]);
-        return -1;
-    }
-
-    if (pid == 0) {
-        /* Child process */
-        close(stdin_pipe[1]);   /* Close write end of stdin pipe */
-        close(stdout_pipe[0]);  /* Close read end of stdout pipe */
-        dup2(stdin_pipe[0], STDIN_FILENO);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        close(stdin_pipe[0]);
-        close(stdout_pipe[1]);
-        /* Redirect stderr to /dev/null */
-        FILE *devnull = fopen("/dev/null", "w");
-        if (devnull) { dup2(fileno(devnull), STDERR_FILENO); fclose(devnull); }
-        execlp("wg", "wg", "pubkey", (char *)NULL);
-        _exit(127);
-    }
-
-    /* Parent process */
-    close(stdin_pipe[0]);   /* Close read end of stdin pipe */
-    close(stdout_pipe[1]);  /* Close write end of stdout pipe */
-
-    /* Write the private key to the child's stdin */
-    size_t keylen = strlen(privkey);
-    write(stdin_pipe[1], privkey, keylen);
-    write(stdin_pipe[1], "\n", 1);
-    close(stdin_pipe[1]);
-
-    /* Read the public key from the child's stdout */
-    size_t total = 0;
-    while (total < publen - 1) {
-        ssize_t n = read(stdout_pipe[0], pubkey + total, publen - 1 - total);
-        if (n <= 0) break;
-        total += (size_t)n;
-    }
-    pubkey[total] = '\0';
-    close(stdout_pipe[0]);
-
-    int status;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    ret = fw_exec_capture(cmd, pubkey, publen);
+    if (ret != 0) {
         fw_log(LOG_WARN, "vpn: wg pubkey failed");
         return -1;
     }
@@ -111,27 +61,12 @@ int fw_vpn_generate_wg_keys(char *privkey, size_t privlen,
     return 0;
 }
 
-/* ── Tunnel name validation ──────────────────────────────────────────── */
-
-int fw_vpn_validate_tunnel_name(const char *name)
-{
-    /* Tunnel names are used in shell commands and file paths, so they must
-     * pass the same validation as network interface names: alphanumeric
-     * plus hyphen, dot, underscore; starting with a letter; max 15 chars. */
-    return fw_validate_interface(name);
-}
-
 /* ── WireGuard config ────────────────────────────────────────────────── */
 
 int fw_vpn_write_wg_config(const fw_vpn_tunnel_t *tunnel,
                             const fw_vpn_peer_t *peers, int peer_count)
 {
     if (!tunnel) return -1;
-
-    if (!fw_vpn_validate_tunnel_name(tunnel->name)) {
-        fw_log(LOG_WARN, "vpn: invalid tunnel name for WireGuard config");
-        return -1;
-    }
 
     char path[512];
     snprintf(path, sizeof(path), "/etc/wireguard/%s.conf", tunnel->name);
@@ -181,11 +116,6 @@ int fw_vpn_write_wg_config(const fw_vpn_tunnel_t *tunnel,
 int fw_vpn_write_ovpn_config(const fw_vpn_tunnel_t *tunnel)
 {
     if (!tunnel) return -1;
-
-    if (!fw_vpn_validate_tunnel_name(tunnel->name)) {
-        fw_log(LOG_WARN, "vpn: invalid tunnel name for OpenVPN config");
-        return -1;
-    }
 
     char path[512];
     if (tunnel->mode == VPN_MODE_CLIENT) {
@@ -256,11 +186,6 @@ int fw_vpn_write_ovpn_config(const fw_vpn_tunnel_t *tunnel)
 int fw_vpn_write_ipsec_config(const fw_vpn_tunnel_t *tunnel)
 {
     if (!tunnel) return -1;
-
-    if (!fw_vpn_validate_tunnel_name(tunnel->name)) {
-        fw_log(LOG_WARN, "vpn: invalid tunnel name for IPSec config");
-        return -1;
-    }
 
     char path[512];
     snprintf(path, sizeof(path), "/etc/ipsec.d/%s.conf", tunnel->name);
@@ -339,11 +264,6 @@ int fw_vpn_start(const fw_vpn_tunnel_t *tunnel)
 {
     if (!tunnel) return -1;
 
-    if (!fw_vpn_validate_tunnel_name(tunnel->name)) {
-        fw_log(LOG_WARN, "vpn: refusing to start tunnel with invalid name");
-        return -1;
-    }
-
     char cmd[256];
 
     switch (tunnel->protocol) {
@@ -376,11 +296,6 @@ int fw_vpn_start(const fw_vpn_tunnel_t *tunnel)
 int fw_vpn_stop(const fw_vpn_tunnel_t *tunnel)
 {
     if (!tunnel) return -1;
-
-    if (!fw_vpn_validate_tunnel_name(tunnel->name)) {
-        fw_log(LOG_WARN, "vpn: refusing to stop tunnel with invalid name");
-        return -1;
-    }
 
     char cmd[256];
 
@@ -416,11 +331,6 @@ int fw_vpn_stop(const fw_vpn_tunnel_t *tunnel)
 int fw_vpn_is_active(const fw_vpn_tunnel_t *tunnel)
 {
     if (!tunnel) return -1;
-
-    if (!fw_vpn_validate_tunnel_name(tunnel->name)) {
-        fw_log(LOG_WARN, "vpn: refusing to check status of tunnel with invalid name");
-        return -1;
-    }
 
     /* Check if the network interface exists */
     char sysfs_path[256];
@@ -469,7 +379,7 @@ char *fw_vpn_generate_wg_client_config(const fw_vpn_tunnel_t *tunnel,
     if (!tunnel || !peer) return NULL;
 
     /* Allocate a generous buffer for the config string */
-    size_t bufsize = 1024;
+    size_t bufsize = 2048;
     char *buf = malloc(bufsize);
     if (!buf) return NULL;
 
@@ -484,23 +394,49 @@ char *fw_vpn_generate_wg_client_config(const fw_vpn_tunnel_t *tunnel,
         peer->allowed_ips,
         tunnel->wg_public_key);
 
+    if (n < 0 || (size_t)n >= bufsize) {
+        free(buf);
+        return NULL;
+    }
+
     if (tunnel->wg_preshared_key[0]) {
-        n += snprintf(buf + n, bufsize - (size_t)n,
+        int w = snprintf(buf + n, bufsize - (size_t)n,
             "PresharedKey = %s\n", tunnel->wg_preshared_key);
+        if (w < 0 || (size_t)w >= bufsize - (size_t)n) {
+            free(buf);
+            return NULL;
+        }
+        n += w;
     }
 
     /* Endpoint is the server address + listen port */
     if (tunnel->endpoint[0]) {
-        n += snprintf(buf + n, bufsize - (size_t)n,
+        int w = snprintf(buf + n, bufsize - (size_t)n,
             "Endpoint = %s\n", tunnel->endpoint);
+        if (w < 0 || (size_t)w >= bufsize - (size_t)n) {
+            free(buf);
+            return NULL;
+        }
+        n += w;
     } else if (tunnel->listen_port[0]) {
-        n += snprintf(buf + n, bufsize - (size_t)n,
+        int w = snprintf(buf + n, bufsize - (size_t)n,
             "Endpoint = <server-ip>:%s\n", tunnel->listen_port);
+        if (w < 0 || (size_t)w >= bufsize - (size_t)n) {
+            free(buf);
+            return NULL;
+        }
+        n += w;
     }
 
-    snprintf(buf + n, bufsize - (size_t)n,
-        "AllowedIPs = 0.0.0.0/0\n"
-        "PersistentKeepalive = 25\n");
+    {
+        int w = snprintf(buf + n, bufsize - (size_t)n,
+            "AllowedIPs = 0.0.0.0/0\n"
+            "PersistentKeepalive = 25\n");
+        if (w < 0 || (size_t)w >= bufsize - (size_t)n) {
+            free(buf);
+            return NULL;
+        }
+    }
 
     fw_log(LOG_INFO, "vpn: generated WireGuard client config for peer '%s'",
            peer->name);

@@ -10,10 +10,9 @@ var routes = {
     dashboard: { render: renderDashboard, title: 'Dashboard' },
     filter: { render: renderFilter, title: 'Filter Rules' },
     nat: { render: renderNat, title: 'NAT' },
+    vpn: { render: renderVpn, title: 'VPN' },
     config: { render: renderConfig, title: 'Configuration' },
-    logs: { render: renderLogs, title: 'Rules' },
-    vpn: { render: renderVpn, title: 'VPN Tunnels' },
-    'vpn-peers': { render: renderVpnPeers, title: 'VPN Peers' }
+    logs: { render: renderLogs, title: 'Rules' }
 };
 
 /* --- Theme Management --- */
@@ -723,13 +722,5 @@ function navigate() {
     route.render();
 }
 
-// Init
-initTheme();
-initSidebar();
-initSearch();
-updateHeaderStatus();
-updateSidebarVersion();
 window.addEventListener('hashchange', navigate);
 navigate();
-setInterval(updateHeaderStatus, 10000);
-document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
