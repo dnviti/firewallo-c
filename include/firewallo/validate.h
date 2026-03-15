@@ -27,4 +27,10 @@ int fw_validate_action(const char *action);
 /* Validate comment (alphanumeric, underscore, hyphen, space) */
 int fw_validate_comment(const char *comment);
 
+/* Validate address field: empty, IPv4, or IPv4/CIDR */
+int fw_validate_addr_field(const char *addr);
+
+/* Validate mangle mark (hex string like "0x1" or decimal) */
+int fw_validate_mark(const char *mark);
+
 #endif /* FIREWALLO_VALIDATE_H */

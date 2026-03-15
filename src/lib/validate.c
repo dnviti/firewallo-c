@@ -169,3 +169,41 @@ int fw_validate_comment(const char *comment)
     }
     return 1;
 }
+
+int fw_validate_addr_field(const char *addr)
+{
+    if (!addr || !*addr)
+        return 1; /* Empty/NULL is OK (optional field) */
+    if (fw_validate_ipv4(addr))
+        return 1;
+    if (fw_validate_ipv4_cidr(addr))
+        return 1;
+    return 0;
+}
+
+int fw_validate_mark(const char *mark)
+{
+    if (!mark || !*mark)
+        return 1; /* Empty/NULL is OK (optional field) */
+
+    const char *p = mark;
+
+    /* Allow "0x" or "0X" prefix for hex */
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+        if (!*p)
+            return 0;
+        for (; *p; p++) {
+            if (!isxdigit((unsigned char)*p))
+                return 0;
+        }
+        return 1;
+    }
+
+    /* Otherwise must be decimal digits */
+    for (; *p; p++) {
+        if (!isdigit((unsigned char)*p))
+            return 0;
+    }
+    return 1;
+}

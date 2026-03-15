@@ -461,6 +461,104 @@ static void test_config_roundtrip_full(void)
     remove(tmpfile);
 }
 
+static void test_validate_filter_rule_fields(void)
+{
+    printf("test_validate_filter_rule_fields\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for validate filter fields");
+
+    /* Add a filter rule with invalid src_addr */
+    int idx = fw_config_chain_index("lan2wan");
+    ASSERT(idx >= 0, "lan2wan found");
+    fw_filter_rule_t *r = &cfg.chains[idx].rules[cfg.chains[idx].rule_count];
+    memset(r, 0, sizeof(*r));
+    fw_strlcpy(r->src_addr, "999.999.999.999", sizeof(r->src_addr));
+    r->action = ACTION_ACCEPT;
+    cfg.chains[idx].rule_count++;
+
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == -1, "validate catches invalid src_addr in filter rule");
+
+    /* Fix src_addr, set invalid comment */
+    fw_strlcpy(r->src_addr, "10.0.0.1", sizeof(r->src_addr));
+    fw_strlcpy(r->comment, "bad;comment", sizeof(r->comment));
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == -1, "validate catches invalid comment in filter rule");
+
+    /* Fix comment, verify it passes */
+    fw_strlcpy(r->comment, "good comment", sizeof(r->comment));
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == 0, "validate passes with valid filter rule");
+
+    /* Remove the added rule */
+    cfg.chains[idx].rule_count--;
+}
+
+static void test_validate_mangle_mark(void)
+{
+    printf("test_validate_mangle_mark\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for validate mangle mark");
+
+    /* Add a mangle prerouting rule with invalid mark */
+    fw_mangle_rule_t *r = &cfg.mangle_pre[cfg.mangle_pre_count];
+    memset(r, 0, sizeof(*r));
+    fw_strlcpy(r->iif, "eth0", sizeof(r->iif));
+    fw_strlcpy(r->mark, "invalid!mark", sizeof(r->mark));
+    r->protocol = PROTO_TCP;
+    cfg.mangle_pre_count++;
+
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == -1, "validate catches invalid mangle mark");
+
+    /* Fix mark to valid hex, should pass */
+    fw_strlcpy(r->mark, "0xFF", sizeof(r->mark));
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == 0, "validate passes with valid hex mark");
+
+    /* Empty mark should also pass (optional) */
+    r->mark[0] = '\0';
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == 0, "validate passes with empty mark");
+
+    cfg.mangle_pre_count--;
+}
+
+static void test_validate_nat_comment(void)
+{
+    printf("test_validate_nat_comment\n");
+    fw_config_t cfg;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load for validate nat comment");
+
+    /* Add a NAT postrouting rule with invalid comment */
+    fw_nat_post_t *r = &cfg.nat_post[cfg.nat_post_count];
+    memset(r, 0, sizeof(*r));
+    fw_strlcpy(r->src, "192.168.1.0/24", sizeof(r->src));
+    fw_strlcpy(r->oif, "eth1", sizeof(r->oif));
+    r->type = NAT_MASQUERADE;
+    fw_strlcpy(r->comment, "drop;table", sizeof(r->comment));
+    cfg.nat_post_count++;
+
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == -1, "validate catches invalid NAT postrouting comment");
+
+    /* Fix comment */
+    fw_strlcpy(r->comment, "masquerade rule", sizeof(r->comment));
+    ret = fw_config_validate(&cfg, err, sizeof(err));
+    ASSERT(ret == 0, "validate passes with valid NAT postrouting comment");
+
+    cfg.nat_post_count--;
+}
+
 int main(void)
 {
     printf("=== Config Tests ===\n\n");
@@ -479,6 +577,9 @@ int main(void)
     test_set_chain_ports();
     test_set_nat();
     test_config_roundtrip_full();
+    test_validate_filter_rule_fields();
+    test_validate_mangle_mark();
+    test_validate_nat_comment();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
