@@ -86,13 +86,13 @@ static void test_compile_start_nft(void)
 
     /* Check key commands exist */
     ASSERT(cmdlist_contains(&out, "flush ruleset"), "has flush");
-    ASSERT(cmdlist_contains(&out, "add table ip filter"), "has filter table");
+    ASSERT(cmdlist_contains(&out, "add table inet filter"), "has filter table");
     ASSERT(cmdlist_contains(&out, "policy drop"), "has drop policy");
-    ASSERT(cmdlist_contains(&out, "add chain ip filter lan2wan"), "has lan2wan chain");
-    ASSERT(cmdlist_contains(&out, "add chain ip filter stato"), "has stato chain");
-    ASSERT(cmdlist_contains(&out, "add chain ip filter dnserv"), "has dnserv chain");
-    ASSERT(cmdlist_contains(&out, "add chain ip filter icmp_good"), "has icmp chain");
-    ASSERT(cmdlist_contains(&out, "add chain ip filter tcp_flags"), "has tcp_flags chain");
+    ASSERT(cmdlist_contains(&out, "add chain inet filter lan2wan"), "has lan2wan chain");
+    ASSERT(cmdlist_contains(&out, "add chain inet filter stato"), "has stato chain");
+    ASSERT(cmdlist_contains(&out, "add chain inet filter dnserv"), "has dnserv chain");
+    ASSERT(cmdlist_contains(&out, "add chain inet filter icmp_good"), "has icmp chain");
+    ASSERT(cmdlist_contains(&out, "add chain inet filter tcp_flags"), "has tcp_flags chain");
 
     /* State rules */
     ASSERT(cmdlist_contains(&out, "ct state related,established"), "has state rules");

@@ -199,6 +199,11 @@ typedef struct {
     int suricata_enabled;
     char suricata_blocked[FW_MAX_PROTOCOLS][FW_MAX_ADDR];
     int suricata_blocked_count;
+
+    /* IPv6 transition mechanism filtering */
+    int block_6to4;
+    int block_teredo;
+    int block_isatap;
 } fw_config_t;
 
 #endif /* FIREWALLO_TYPES_H */

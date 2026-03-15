@@ -479,6 +479,18 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
                           cfg->suricata_blocked, &cfg->suricata_blocked_count, FW_MAX_PROTOCOLS);
     }
 
+    /* IPv6 transition mechanism filtering */
+    json_value_t *ipv6_transition = json_object_get(root, "ipv6_transition");
+    if (ipv6_transition && ipv6_transition->type == JSON_OBJECT) {
+        json_value_t *v;
+        v = json_object_get(ipv6_transition, "block_6to4");
+        if (v) cfg->block_6to4 = json_bool_value(v);
+        v = json_object_get(ipv6_transition, "block_teredo");
+        if (v) cfg->block_teredo = json_bool_value(v);
+        v = json_object_get(ipv6_transition, "block_isatap");
+        if (v) cfg->block_isatap = json_bool_value(v);
+    }
+
     json_free(root);
     return 0;
 }
@@ -735,6 +747,13 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
                                        cfg->suricata_blocked_count));
     json_object_set(root, "suricata", suricata);
 
+    /* IPv6 transition mechanism filtering */
+    json_value_t *ipv6_transition = json_new_object();
+    json_object_set(ipv6_transition, "block_6to4", json_new_bool(cfg->block_6to4));
+    json_object_set(ipv6_transition, "block_teredo", json_new_bool(cfg->block_teredo));
+    json_object_set(ipv6_transition, "block_isatap", json_new_bool(cfg->block_isatap));
+    json_object_set(root, "ipv6_transition", ipv6_transition);
+
     return root;
 }
 
@@ -798,7 +817,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate DNS servers */
+    /* Validate DNS servers (IPv4 only — backends generate IPv4-only DNS allow rules) */
     for (int i = 0; i < cfg->dns_count; i++) {
         if (!fw_validate_ipv4(cfg->dns[i])) {
             snprintf(err, errlen, "invalid DNS server: %s", cfg->dns[i]);
@@ -806,7 +825,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate IP ranges */
+    /* Validate IP ranges (IPv4 CIDR only — used for NAT masquerading which is IPv4-only) */
     for (int i = 0; i < cfg->lan_range_count; i++) {
         if (!fw_validate_ipv4_cidr(cfg->lan_ranges[i])) {
             snprintf(err, errlen, "invalid LAN range: %s", cfg->lan_ranges[i]);
@@ -820,7 +839,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate NAT postrouting rules */
+    /* Validate NAT postrouting rules (IPv4 only — backends generate IPv4-only rules) */
     for (int i = 0; i < cfg->nat_post_count; i++) {
         const fw_nat_post_t *r = &cfg->nat_post[i];
         if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
@@ -845,7 +864,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate NAT prerouting rules */
+    /* Validate NAT prerouting rules (IPv4 only — DNAT rules are IPv4-only) */
     for (int i = 0; i < cfg->nat_pre_count; i++) {
         const fw_nat_pre_t *r = &cfg->nat_pre[i];
         if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
