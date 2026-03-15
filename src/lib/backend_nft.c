@@ -376,6 +376,61 @@ static void nft_create_mangle_table(fw_cmdlist_t *out)
     nft_cmd(out, "add chain inet mangle POSTROUTING { type filter hook postrouting priority 150; policy accept; }");
 }
 
+/* ── Rate limiting ─────────────────────────────────────────────────── */
+
+static void nft_add_rate_limit(fw_cmdlist_t *out, const char *chain,
+                                const fw_rate_limit_t *rl)
+{
+    if (!rl || !rl->enabled)
+        return;
+
+    char rule[512];
+
+    /* Create a dynamic set for banned IPs with automatic timeout */
+    snprintf(rule, sizeof(rule),
+             "add set ip filter ratelimit_%s { type ipv4_addr; flags dynamic,timeout; timeout %ds; }",
+             chain, rl->ban_seconds);
+    nft_cmd(out, rule);
+
+    /* Drop packets from IPs already in the ban set */
+    snprintf(rule, sizeof(rule),
+             "add rule ip filter %s ip saddr @ratelimit_%s "
+             "log prefix \\\"RATELIMIT BAN %s : \\\" counter drop",
+             chain, chain, chain);
+    nft_cmd(out, rule);
+
+    /* Use a meter keyed on ip saddr so rate limiting is per-source-IP.
+     * Compute an equivalent rate+unit that respects period_seconds:
+     *   - period <= 1s   -> rate/second
+     *   - period <= 60s  -> (max * 60/period)/minute
+     *   - otherwise      -> (max * 3600/period)/hour
+     * This preserves the configured semantics instead of collapsing
+     * arbitrary periods into a single unit. */
+    const char *unit;
+    int rate;
+    if (rl->period_seconds <= 1) {
+        rate = rl->max_connections;
+        unit = "second";
+    } else if (rl->period_seconds <= 60) {
+        rate = rl->max_connections * 60 / rl->period_seconds;
+        if (rate < 1) rate = 1;
+        unit = "minute";
+    } else {
+        rate = rl->max_connections * 3600 / rl->period_seconds;
+        if (rate < 1) rate = 1;
+        unit = "hour";
+    }
+
+    snprintf(rule, sizeof(rule),
+             "add rule ip filter %s ct state new "
+             "meter ratelimit_meter_%s { ip saddr limit rate over %d/%s burst %d packets } "
+             "add @ratelimit_%s { ip saddr } "
+             "log prefix \\\"RATELIMIT ADD %s : \\\" counter drop",
+             chain, chain, rate, unit,
+             rl->max_connections, chain, chain);
+    nft_cmd(out, rule);
+}
+
 /* ── Stop / Reset ──────────────────────────────────────────────────── */
 
 static void nft_setup_stop(fw_cmdlist_t *out)
@@ -431,6 +486,7 @@ const fw_backend_ops_t fw_backend_nft = {
     .add_snat             = nft_add_snat,
     .add_dnat             = nft_add_dnat,
     .create_mangle_table  = nft_create_mangle_table,
+    .add_rate_limit       = nft_add_rate_limit,
     .setup_stop           = nft_setup_stop,
     .setup_reset          = nft_setup_reset,
 };

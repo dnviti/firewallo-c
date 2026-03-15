@@ -886,6 +886,50 @@ int cmd_preview(fw_config_t *cfg, const char *config_path)
     return 0;
 }
 
+/* ── Set rate limit ────────────────────────────────────────────────── */
+
+int cmd_set_ratelimit(fw_config_t *cfg, const char *chain, const char *max_str,
+                      const char *period_str, const char *ban_str,
+                      const char *config_path)
+{
+    int idx = fw_config_chain_index(chain);
+    if (idx < 0) {
+        fprintf(stderr, "Unknown chain: %s\n", chain);
+        return 1;
+    }
+
+    char *endptr;
+    long max_l = strtol(max_str, &endptr, 10);
+    if (*endptr != '\0' || max_l <= 0) {
+        fprintf(stderr, "Invalid max_connections: %s (must be positive integer)\n", max_str);
+        return 1;
+    }
+
+    long period_l = strtol(period_str, &endptr, 10);
+    if (*endptr != '\0' || period_l <= 0) {
+        fprintf(stderr, "Invalid period_seconds: %s (must be positive integer)\n", period_str);
+        return 1;
+    }
+
+    long ban_l = strtol(ban_str, &endptr, 10);
+    if (*endptr != '\0' || ban_l <= 0) {
+        fprintf(stderr, "Invalid ban_seconds: %s (must be positive integer)\n", ban_str);
+        return 1;
+    }
+
+    cfg->chains[idx].rate_limit.max_connections = (int)max_l;
+    cfg->chains[idx].rate_limit.period_seconds = (int)period_l;
+    cfg->chains[idx].rate_limit.ban_seconds = (int)ban_l;
+    cfg->chains[idx].rate_limit.enabled = 1;
+
+    if (validate_and_save(cfg, config_path) != 0)
+        return 1;
+
+    printf("Rate limit set on %s: max=%d period=%ds ban=%ds\n",
+           chain, (int)max_l, (int)period_l, (int)ban_l);
+    return 0;
+}
+
 /* ── Reload ────────────────────────────────────────────────────────── */
 
 int cmd_reload(fw_config_t *cfg, const char *config_path, int verbose)

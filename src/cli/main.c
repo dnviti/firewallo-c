@@ -36,6 +36,7 @@ static void print_usage(void)
         "  set-sysctl <key> <0|1>\n"
         "  set-chain <chain> <tcp|udp> <add|remove> <port>\n"
         "  set-nat <post|pre> <add|remove> <rule-json>\n"
+        "  set-ratelimit <chain> <max> <period> <ban>\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>  Config file (default: /etc/firewallo/firewallo.json)\n"
@@ -205,6 +206,13 @@ int main(int argc, char *argv[])
         }
         ret = cmd_set_nat(&cfg, argv[optind + 1], argv[optind + 2],
                           argv[optind + 3], config_path);
+    } else if (strcmp(command, "set-ratelimit") == 0) {
+        if (optind + 4 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-ratelimit <chain> <max> <period> <ban>\n");
+            return 1;
+        }
+        ret = cmd_set_ratelimit(&cfg, argv[optind + 1], argv[optind + 2],
+                                argv[optind + 3], argv[optind + 4], config_path);
     } else if (strcmp(command, "version") == 0)
         ret = cmd_version(&cfg);
     else {

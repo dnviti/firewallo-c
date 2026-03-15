@@ -263,9 +263,15 @@ int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
         for (int v2 = 0; v2 < vpn_count; v2++)
             ops->add_forward_jump(out, vpn_ifs[v1], vpn_ifs[v2], "vpns2vpns");
 
-    /* 18. Apply filter port rules for all 25 chains */
+    /* 18. Apply rate limits and filter port rules for all 25 chains */
     for (int c = 0; c < FW_CHAIN_COUNT; c++) {
         const fw_chain_t *ch = &cfg->chains[c];
+
+        /* Rate limiting rules come before port rules so offending IPs
+         * are dropped before any accept rules are evaluated */
+        if (ch->rate_limit.enabled)
+            ops->add_rate_limit(out, ch->name, &ch->rate_limit);
+
         for (int i = 0; i < ch->tcp_port_count; i++)
             ops->add_filter_port_rule(out, ch->name, PROTO_TCP, ch->tcp_ports[i]);
         for (int i = 0; i < ch->udp_port_count; i++)

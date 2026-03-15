@@ -385,6 +385,51 @@ static void ipt_create_mangle_table(fw_cmdlist_t *out)
     (void)out; /* iptables mangle table exists by default */
 }
 
+/* ── Rate limiting ─────────────────────────────────────────────────── */
+
+static void ipt_add_rate_limit(fw_cmdlist_t *out, const char *chain,
+                                const fw_rate_limit_t *rl)
+{
+    if (!rl || !rl->enabled)
+        return;
+
+    /* Use the 'recent' module for brute-force protection:
+     * 1. Drop packets from IPs already on the ban list within the ban window
+     * 2. Track new connections and add to ban list if rate exceeded */
+
+    /* Drop from IPs on the recent list that exceeded the rate within ban_seconds */
+    fw_cmdlist_append(out,
+        "%s -A %s -m recent --name ratelimit_%s --rcheck "
+        "--seconds %d --hitcount %d "
+        "-j LOG --log-prefix \"RATELIMIT BAN %s :\"",
+        IPT, chain, chain, rl->ban_seconds, rl->max_connections + 1, chain);
+    fw_cmdlist_append(out,
+        "%s -A %s -m recent --name ratelimit_%s --rcheck "
+        "--seconds %d --hitcount %d -j DROP",
+        IPT, chain, chain, rl->ban_seconds, rl->max_connections + 1);
+
+    /* Track new connections with the recent module.
+     * --set must have a terminating target; RETURN continues normal
+     * chain evaluation after marking the source address. */
+    fw_cmdlist_append(out,
+        "%s -A %s -m state --state NEW "
+        "-m recent --name ratelimit_%s --set -j RETURN",
+        IPT, chain, chain);
+
+    /* Drop if rate exceeded within the period */
+    fw_cmdlist_append(out,
+        "%s -A %s -m state --state NEW "
+        "-m recent --name ratelimit_%s --update "
+        "--seconds %d --hitcount %d "
+        "-j LOG --log-prefix \"RATELIMIT ADD %s :\"",
+        IPT, chain, chain, rl->period_seconds, rl->max_connections + 1, chain);
+    fw_cmdlist_append(out,
+        "%s -A %s -m state --state NEW "
+        "-m recent --name ratelimit_%s --update "
+        "--seconds %d --hitcount %d -j DROP",
+        IPT, chain, chain, rl->period_seconds, rl->max_connections + 1);
+}
+
 /* ── Stop / Reset ──────────────────────────────────────────────────── */
 
 static void ipt_setup_stop(fw_cmdlist_t *out)
@@ -432,6 +477,7 @@ const fw_backend_ops_t fw_backend_ipt = {
     .add_snat             = ipt_add_snat,
     .add_dnat             = ipt_add_dnat,
     .create_mangle_table  = ipt_create_mangle_table,
+    .add_rate_limit       = ipt_add_rate_limit,
     .setup_stop           = ipt_setup_stop,
     .setup_reset          = ipt_setup_reset,
 };
