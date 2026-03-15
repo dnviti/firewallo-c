@@ -16,6 +16,12 @@
 #include <unistd.h>
 #include <time.h>
 
+/* Forward declarations for domain handlers from split API files */
+int api_handle_vpn(httpd_t *srv, const http_request_t *req,
+                   http_response_t *resp, const char *path, const char *method);
+int api_handle_system(httpd_t *srv, const http_request_t *req,
+                      http_response_t *resp, const char *path, const char *method);
+
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
 static const char API_ERR_FALLBACK[] = "{\"error\":true,\"message\":\"internal error\"}";
@@ -1250,15 +1256,15 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
     const char *method = req->method;
     const char *sub;
 
+    /* Backup/snapshot endpoints: /api/v1/config/snapshots... */
+    if (strncmp(path, "config/snapshots", 16) == 0) {
+        return api_handle_backup(srv, req, resp);
+    }
+
     /* GET /api/v1/version */
     if (strcmp(path, "version") == 0 && strcmp(method, "GET") == 0) {
         api_version(srv, resp);
         return 0;
-    }
-
-    /* Backup/snapshot endpoints: /api/v1/config/snapshots... */
-    if (strncmp(path, "config/snapshots", 16) == 0) {
-        return api_handle_backup(srv, req, resp);
     }
 
     /* GET/PUT /api/v1/config */
@@ -1487,6 +1493,14 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         api_validate(srv, resp);
         return 0;
     }
+
+    /* VPN domain handler (from SEC-001 split) */
+    if (api_handle_vpn(srv, req, resp, path, method))
+        return 0;
+
+    /* System domain handler */
+    if (api_handle_system(srv, req, resp, path, method))
+        return 0;
 
     /* /api/v1/monitor/... */
     if ((sub = path_after(path, "monitor/")) != NULL) {

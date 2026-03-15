@@ -634,6 +634,103 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
+    /* VPN tunnels and peers */
+    json_value_t *vpn_cfg = json_object_get(root, "vpn_config");
+    if (vpn_cfg && vpn_cfg->type == JSON_OBJECT) {
+        json_value_t *tunnels = json_object_get(vpn_cfg, "tunnels");
+        if (tunnels && tunnels->type == JSON_ARRAY) {
+            cfg->vpn_tunnel_count = 0;
+            int tn = json_array_count(tunnels);
+            for (int i = 0; i < tn && cfg->vpn_tunnel_count < FW_MAX_VPN_TUNNELS; i++) {
+                json_value_t *t = json_array_get(tunnels, i);
+                if (!t || t->type != JSON_OBJECT) continue;
+                fw_vpn_tunnel_t *tun = &cfg->vpn_tunnels[cfg->vpn_tunnel_count];
+                memset(tun, 0, sizeof(*tun));
+                const char *sv;
+                sv = json_string_value(json_object_get(t, "name"));
+                if (sv) fw_strlcpy(tun->name, sv, sizeof(tun->name));
+                sv = json_string_value(json_object_get(t, "protocol"));
+                if (sv) {
+                    if (strcmp(sv, "openvpn") == 0) tun->protocol = VPN_OPENVPN;
+                    else if (strcmp(sv, "ipsec") == 0) tun->protocol = VPN_IPSEC;
+                    else tun->protocol = VPN_WIREGUARD;
+                }
+                sv = json_string_value(json_object_get(t, "mode"));
+                if (sv) {
+                    if (strcmp(sv, "client") == 0) tun->mode = VPN_MODE_CLIENT;
+                    else if (strcmp(sv, "site2site") == 0) tun->mode = VPN_MODE_SITE2SITE;
+                    else tun->mode = VPN_MODE_SERVER;
+                }
+                sv = json_string_value(json_object_get(t, "listen_port"));
+                if (sv) fw_strlcpy(tun->listen_port, sv, sizeof(tun->listen_port));
+                sv = json_string_value(json_object_get(t, "endpoint"));
+                if (sv) fw_strlcpy(tun->endpoint, sv, sizeof(tun->endpoint));
+                sv = json_string_value(json_object_get(t, "local_network"));
+                if (sv) fw_strlcpy(tun->local_network, sv, sizeof(tun->local_network));
+                sv = json_string_value(json_object_get(t, "remote_network"));
+                if (sv) fw_strlcpy(tun->remote_network, sv, sizeof(tun->remote_network));
+                sv = json_string_value(json_object_get(t, "interface"));
+                if (sv) fw_strlcpy(tun->interface, sv, sizeof(tun->interface));
+                sv = json_string_value(json_object_get(t, "comment"));
+                if (sv) fw_strlcpy(tun->comment, sv, sizeof(tun->comment));
+                sv = json_string_value(json_object_get(t, "wg_private_key"));
+                if (sv) fw_strlcpy(tun->wg_private_key, sv, sizeof(tun->wg_private_key));
+                sv = json_string_value(json_object_get(t, "wg_public_key"));
+                if (sv) fw_strlcpy(tun->wg_public_key, sv, sizeof(tun->wg_public_key));
+                sv = json_string_value(json_object_get(t, "wg_preshared_key"));
+                if (sv) fw_strlcpy(tun->wg_preshared_key, sv, sizeof(tun->wg_preshared_key));
+                sv = json_string_value(json_object_get(t, "ovpn_ca_path"));
+                if (sv) fw_strlcpy(tun->ovpn_ca_path, sv, sizeof(tun->ovpn_ca_path));
+                sv = json_string_value(json_object_get(t, "ovpn_cert_path"));
+                if (sv) fw_strlcpy(tun->ovpn_cert_path, sv, sizeof(tun->ovpn_cert_path));
+                sv = json_string_value(json_object_get(t, "ovpn_key_path"));
+                if (sv) fw_strlcpy(tun->ovpn_key_path, sv, sizeof(tun->ovpn_key_path));
+                sv = json_string_value(json_object_get(t, "ovpn_dh_path"));
+                if (sv) fw_strlcpy(tun->ovpn_dh_path, sv, sizeof(tun->ovpn_dh_path));
+                sv = json_string_value(json_object_get(t, "ovpn_cipher"));
+                if (sv) fw_strlcpy(tun->ovpn_cipher, sv, sizeof(tun->ovpn_cipher));
+                sv = json_string_value(json_object_get(t, "ipsec_auth_method"));
+                if (sv) fw_strlcpy(tun->ipsec_auth_method, sv, sizeof(tun->ipsec_auth_method));
+                sv = json_string_value(json_object_get(t, "ipsec_psk"));
+                if (sv) fw_strlcpy(tun->ipsec_psk, sv, sizeof(tun->ipsec_psk));
+                sv = json_string_value(json_object_get(t, "ipsec_local_id"));
+                if (sv) fw_strlcpy(tun->ipsec_local_id, sv, sizeof(tun->ipsec_local_id));
+                sv = json_string_value(json_object_get(t, "ipsec_remote_id"));
+                if (sv) fw_strlcpy(tun->ipsec_remote_id, sv, sizeof(tun->ipsec_remote_id));
+                cfg->vpn_tunnel_count++;
+            }
+        }
+        json_value_t *peers = json_object_get(vpn_cfg, "peers");
+        if (peers && peers->type == JSON_ARRAY) {
+            cfg->vpn_peer_count = 0;
+            int pn = json_array_count(peers);
+            for (int i = 0; i < pn && cfg->vpn_peer_count < FW_MAX_VPN_PEERS; i++) {
+                json_value_t *p = json_array_get(peers, i);
+                if (!p || p->type != JSON_OBJECT) continue;
+                fw_vpn_peer_t *peer = &cfg->vpn_peers[cfg->vpn_peer_count];
+                memset(peer, 0, sizeof(*peer));
+                const char *sv;
+                sv = json_string_value(json_object_get(p, "name"));
+                if (sv) fw_strlcpy(peer->name, sv, sizeof(peer->name));
+                sv = json_string_value(json_object_get(p, "tunnel"));
+                if (sv) fw_strlcpy(peer->tunnel, sv, sizeof(peer->tunnel));
+                sv = json_string_value(json_object_get(p, "public_key"));
+                if (sv) fw_strlcpy(peer->public_key, sv, sizeof(peer->public_key));
+                sv = json_string_value(json_object_get(p, "preshared_key"));
+                if (sv) fw_strlcpy(peer->preshared_key, sv, sizeof(peer->preshared_key));
+                sv = json_string_value(json_object_get(p, "allowed_ips"));
+                if (sv) fw_strlcpy(peer->allowed_ips, sv, sizeof(peer->allowed_ips));
+                sv = json_string_value(json_object_get(p, "endpoint"));
+                if (sv) fw_strlcpy(peer->endpoint, sv, sizeof(peer->endpoint));
+                json_value_t *ka = json_object_get(p, "keepalive");
+                if (ka && ka->type == JSON_NUMBER) peer->keepalive = (int)json_number_value(ka);
+                sv = json_string_value(json_object_get(p, "comment"));
+                if (sv) fw_strlcpy(peer->comment, sv, sizeof(peer->comment));
+                cfg->vpn_peer_count++;
+            }
+        }
+    }
+
     json_free(root);
     return 0;
 }
@@ -958,6 +1055,57 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
         json_array_append(aliases_arr, obj);
     }
     json_object_set(root, "aliases", aliases_arr);
+
+    /* VPN config */
+    json_value_t *vpn_cfg_obj = json_new_object();
+    json_value_t *vpn_tunnels_arr = json_new_array();
+    for (int i = 0; i < cfg->vpn_tunnel_count; i++) {
+        const fw_vpn_tunnel_t *t = &cfg->vpn_tunnels[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "name", json_new_string(t->name));
+        const char *proto = t->protocol == VPN_OPENVPN ? "openvpn" :
+                            t->protocol == VPN_IPSEC ? "ipsec" : "wireguard";
+        json_object_set(obj, "protocol", json_new_string(proto));
+        const char *mode = t->mode == VPN_MODE_CLIENT ? "client" :
+                           t->mode == VPN_MODE_SITE2SITE ? "site2site" : "server";
+        json_object_set(obj, "mode", json_new_string(mode));
+        json_object_set(obj, "listen_port", json_new_string(t->listen_port));
+        json_object_set(obj, "endpoint", json_new_string(t->endpoint));
+        json_object_set(obj, "local_network", json_new_string(t->local_network));
+        json_object_set(obj, "remote_network", json_new_string(t->remote_network));
+        json_object_set(obj, "interface", json_new_string(t->interface));
+        json_object_set(obj, "comment", json_new_string(t->comment));
+        if (t->wg_private_key[0]) json_object_set(obj, "wg_private_key", json_new_string(t->wg_private_key));
+        if (t->wg_public_key[0]) json_object_set(obj, "wg_public_key", json_new_string(t->wg_public_key));
+        if (t->wg_preshared_key[0]) json_object_set(obj, "wg_preshared_key", json_new_string(t->wg_preshared_key));
+        if (t->ovpn_ca_path[0]) json_object_set(obj, "ovpn_ca_path", json_new_string(t->ovpn_ca_path));
+        if (t->ovpn_cert_path[0]) json_object_set(obj, "ovpn_cert_path", json_new_string(t->ovpn_cert_path));
+        if (t->ovpn_key_path[0]) json_object_set(obj, "ovpn_key_path", json_new_string(t->ovpn_key_path));
+        if (t->ovpn_dh_path[0]) json_object_set(obj, "ovpn_dh_path", json_new_string(t->ovpn_dh_path));
+        if (t->ovpn_cipher[0]) json_object_set(obj, "ovpn_cipher", json_new_string(t->ovpn_cipher));
+        if (t->ipsec_auth_method[0]) json_object_set(obj, "ipsec_auth_method", json_new_string(t->ipsec_auth_method));
+        if (t->ipsec_psk[0]) json_object_set(obj, "ipsec_psk", json_new_string(t->ipsec_psk));
+        if (t->ipsec_local_id[0]) json_object_set(obj, "ipsec_local_id", json_new_string(t->ipsec_local_id));
+        if (t->ipsec_remote_id[0]) json_object_set(obj, "ipsec_remote_id", json_new_string(t->ipsec_remote_id));
+        json_array_append(vpn_tunnels_arr, obj);
+    }
+    json_object_set(vpn_cfg_obj, "tunnels", vpn_tunnels_arr);
+    json_value_t *vpn_peers_arr = json_new_array();
+    for (int i = 0; i < cfg->vpn_peer_count; i++) {
+        const fw_vpn_peer_t *p = &cfg->vpn_peers[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "name", json_new_string(p->name));
+        json_object_set(obj, "tunnel", json_new_string(p->tunnel));
+        json_object_set(obj, "public_key", json_new_string(p->public_key));
+        if (p->preshared_key[0]) json_object_set(obj, "preshared_key", json_new_string(p->preshared_key));
+        json_object_set(obj, "allowed_ips", json_new_string(p->allowed_ips));
+        if (p->endpoint[0]) json_object_set(obj, "endpoint", json_new_string(p->endpoint));
+        json_object_set(obj, "keepalive", json_new_number(p->keepalive));
+        json_object_set(obj, "comment", json_new_string(p->comment));
+        json_array_append(vpn_peers_arr, obj);
+    }
+    json_object_set(vpn_cfg_obj, "peers", vpn_peers_arr);
+    json_object_set(root, "vpn_config", vpn_cfg_obj);
 
     return root;
 }

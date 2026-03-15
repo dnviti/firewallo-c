@@ -162,5 +162,9 @@
   "suricata": {
     "enabled": false,
     "blocked_protocols": []
+  },
+  "vpn_config": {
+    "tunnels": [],
+    "peers": []
   }
 }
