@@ -76,14 +76,12 @@ int fw_validate_ipv6(const char *ip)
     if (!ip || !*ip)
         return 0;
 
-    /* Count colons and track :: occurrence */
-    int colon_count = 0;
+    /* Track :: occurrence */
     int double_colon = 0;
     int double_colon_count = 0;
 
     for (const char *p = ip; *p; p++) {
         if (*p == ':') {
-            colon_count++;
             if (p[1] == ':') {
                 double_colon = 1;
                 double_colon_count++;

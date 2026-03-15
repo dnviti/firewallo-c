@@ -18,11 +18,10 @@ static void ipt_flush_ruleset(fw_cmdlist_t *out)
     fw_cmdlist_append(out, "%s -t filter -X", IPT);
     fw_cmdlist_append(out, "%s -t mangle -F", IPT);
     fw_cmdlist_append(out, "%s -t mangle -X", IPT);
-    /* IPv6 */
-    fw_cmdlist_append(out, "%s -F", IP6T);
-    fw_cmdlist_append(out, "%s -X", IP6T);
-    fw_cmdlist_append(out, "%s -t filter -F", IP6T);
-    fw_cmdlist_append(out, "%s -t filter -X", IP6T);
+    /* NOTE: Do not flush ip6tables here — without rebuilding IPv6 chain
+       structure and setting IPv6 policies, flushing would leave IPv6
+       completely unfiltered. IPv6 management will be added when the
+       iptables backend has full IPv6 support. */
 }
 
 static void ipt_create_filter_table(fw_cmdlist_t *out)
@@ -164,17 +163,20 @@ static void ipt_add_icmp_rules(fw_cmdlist_t *out)
 
 static void ipt_add_icmpv6_rules(fw_cmdlist_t *out)
 {
-    /* Neighbor Solicitation */
-    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type neighbour-solicitation -j ACCEPT", IP6T);
-    /* Neighbor Advertisement */
-    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type neighbour-advertisement -j ACCEPT", IP6T);
-    /* Router Solicitation */
-    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type router-solicitation -j ACCEPT", IP6T);
-    /* Router Advertisement */
-    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type router-advertisement -j ACCEPT", IP6T);
-    /* Echo request/reply */
-    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type echo-request -j ACCEPT", IP6T);
-    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type echo-reply -j ACCEPT", IP6T);
+    /* The icmp_good chain only exists in IPv4 iptables, not in ip6tables.
+       Add essential ICMPv6 rules directly to the built-in ip6tables chains. */
+    const char *icmpv6_types[] = {
+        "neighbour-solicitation", "neighbour-advertisement",
+        "router-solicitation", "router-advertisement",
+        "echo-request", "echo-reply"
+    };
+    const char *chains[] = {"INPUT", "FORWARD"};
+    for (int c = 0; c < 2; c++) {
+        for (int i = 0; i < 6; i++) {
+            fw_cmdlist_append(out, "%s -A %s -p icmpv6 --icmpv6-type %s -j ACCEPT",
+                              IP6T, chains[c], icmpv6_types[i]);
+        }
+    }
 }
 
 /* ── IPv6 transition mechanism filtering ───────────────────────────── */

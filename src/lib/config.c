@@ -817,32 +817,32 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate DNS servers (accept IPv4 or IPv6) */
+    /* Validate DNS servers (IPv4 only — backends generate IPv4-only DNS allow rules) */
     for (int i = 0; i < cfg->dns_count; i++) {
-        if (!fw_validate_ip(cfg->dns[i])) {
+        if (!fw_validate_ipv4(cfg->dns[i])) {
             snprintf(err, errlen, "invalid DNS server: %s", cfg->dns[i]);
             return -1;
         }
     }
 
-    /* Validate IP ranges (accept IPv4 or IPv6 CIDR) */
+    /* Validate IP ranges (IPv4 CIDR only — used for NAT masquerading which is IPv4-only) */
     for (int i = 0; i < cfg->lan_range_count; i++) {
-        if (!fw_validate_ip_cidr(cfg->lan_ranges[i])) {
+        if (!fw_validate_ipv4_cidr(cfg->lan_ranges[i])) {
             snprintf(err, errlen, "invalid LAN range: %s", cfg->lan_ranges[i]);
             return -1;
         }
     }
     for (int i = 0; i < cfg->dmz_range_count; i++) {
-        if (!fw_validate_ip_cidr(cfg->dmz_ranges[i])) {
+        if (!fw_validate_ipv4_cidr(cfg->dmz_ranges[i])) {
             snprintf(err, errlen, "invalid DMZ range: %s", cfg->dmz_ranges[i]);
             return -1;
         }
     }
 
-    /* Validate NAT postrouting rules */
+    /* Validate NAT postrouting rules (IPv4 only — backends generate IPv4-only rules) */
     for (int i = 0; i < cfg->nat_post_count; i++) {
         const fw_nat_post_t *r = &cfg->nat_post[i];
-        if (r->src[0] && !fw_validate_ip_cidr(r->src) && !fw_validate_ip(r->src)) {
+        if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
             snprintf(err, errlen, "invalid src in NAT postrouting rule %d: %s", i, r->src);
             return -1;
         }
@@ -854,7 +854,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "NAT postrouting rule %d: snat requires to_source", i);
             return -1;
         }
-        if (r->to_source[0] && !fw_validate_ip(r->to_source)) {
+        if (r->to_source[0] && !fw_validate_ipv4(r->to_source)) {
             snprintf(err, errlen, "invalid to_source in NAT postrouting rule %d: %s", i, r->to_source);
             return -1;
         }
@@ -864,10 +864,10 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate NAT prerouting rules */
+    /* Validate NAT prerouting rules (IPv4 only — DNAT rules are IPv4-only) */
     for (int i = 0; i < cfg->nat_pre_count; i++) {
         const fw_nat_pre_t *r = &cfg->nat_pre[i];
-        if (r->src[0] && !fw_validate_ip_cidr(r->src) && !fw_validate_ip(r->src)) {
+        if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
             snprintf(err, errlen, "invalid src in NAT prerouting rule %d: %s", i, r->src);
             return -1;
         }
@@ -879,7 +879,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "invalid dport in NAT prerouting rule %d: %d", i, r->dport);
             return -1;
         }
-        if (!fw_validate_ip(r->to_dest_ip)) {
+        if (!fw_validate_ipv4(r->to_dest_ip)) {
             snprintf(err, errlen, "invalid to_dest_ip in NAT prerouting rule %d: %s", i, r->to_dest_ip);
             return -1;
         }
