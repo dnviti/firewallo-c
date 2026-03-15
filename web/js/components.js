@@ -183,16 +183,21 @@ function showModal(title, bodyContent, footerButtons) {
 
     overlay.appendChild(modal);
 
-    overlay.addEventListener('click', function handler(e) {
+    function overlayClickHandler(e) {
         if (e.target === overlay) {
             hideModal();
-            overlay.removeEventListener('click', handler);
         }
-    });
+    }
+    overlay.addEventListener('click', overlayClickHandler);
+    overlay._clickHandler = overlayClickHandler;
 }
 
 function hideModal() {
     var overlay = document.getElementById('modal-overlay');
+    if (overlay._clickHandler) {
+        overlay.removeEventListener('click', overlay._clickHandler);
+        overlay._clickHandler = null;
+    }
     overlay.classList.add('hidden');
     overlay.innerHTML = '';
 }

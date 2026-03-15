@@ -261,7 +261,10 @@ a:hover { color: var(--accent-hover); }
 }
 
 .sidebar.collapsed .sidebar-collapse-btn {
-    display: none;
+    width: 28px;
+    height: 28px;
+    padding: 2px;
+    margin: 0 auto;
 }
 
 .sidebar.collapsed .nav-item {

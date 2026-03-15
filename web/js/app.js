@@ -64,19 +64,19 @@ document.getElementById('theme-toggle').addEventListener('click', function() {
 /* --- Status Indicator --- */
 async function updateStatus() {
     var indicator = document.getElementById('status-indicator');
-    try {
-        var res = await API.get('firewall/status');
-        var s = (res.data || {});
-        if (s.active) {
-            indicator.className = 'status-indicator online';
-            indicator.querySelector('.status-text').textContent = 'Active';
-        } else {
-            indicator.className = 'status-indicator offline';
-            indicator.querySelector('.status-text').textContent = 'Inactive';
-        }
-    } catch (e) {
+    var res = await API.get('firewall/status');
+    if (res.error || !res.data) {
         indicator.className = 'status-indicator offline';
         indicator.querySelector('.status-text').textContent = 'Error';
+        return;
+    }
+    var s = res.data;
+    if (s.active) {
+        indicator.className = 'status-indicator online';
+        indicator.querySelector('.status-text').textContent = 'Active';
+    } else {
+        indicator.className = 'status-indicator offline';
+        indicator.querySelector('.status-text').textContent = 'Inactive';
     }
 }
 
@@ -86,12 +86,11 @@ setInterval(updateStatus, 15000);
 
 /* --- Version in sidebar --- */
 (async function loadVersion() {
-    try {
-        var res = await API.get('version');
-        var ver = (res.data || {}).version || '';
-        var el = document.getElementById('sidebar-version');
-        if (el && ver) el.textContent = 'v' + ver;
-    } catch (e) { /* ignore */ }
+    var res = await API.get('version');
+    if (res.error || !res.data) return;
+    var ver = res.data.version || '';
+    var el = document.getElementById('sidebar-version');
+    if (el && ver) el.textContent = 'v' + ver;
 })();
 
 /* ============================================================
@@ -237,8 +236,6 @@ async function renderDashboard() {
 }
 
 // --- Filter Rules ---
-var filterActiveTab = 'fw';
-
 async function renderFilter() {
     view.innerHTML = '';
     view.appendChild(createLoading('Loading filter chains...'));
@@ -268,7 +265,6 @@ async function renderFilter() {
     });
 
     var tabContainer = createTabBar(zones, function(zoneKey, contentArea) {
-        filterActiveTab = zoneKey;
         renderFilterZone(zoneKey, zones, chains, contentArea);
     });
 
@@ -560,37 +556,70 @@ async function renderConfig() {
 }
 
 function renderConfigSections(cfg, container) {
-    var sections = [
-        { key: 'version', title: 'General', fields: ['version', 'language', 'backend'] },
-        { key: 'interfaces', title: 'Interfaces', fields: ['if_wan', 'if_lan', 'if_dmz', 'if_vpns'] },
-        { key: 'dns', title: 'DNS', fields: ['dns1', 'dns2'] },
-        { key: 'ranges', title: 'Network Ranges', fields: ['range_lan', 'range_dmz', 'range_vpns'] },
-        { key: 'sysctl', title: 'Sysctl', fields: ['ip_forward', 'rp_filter', 'syn_cookies', 'log_martians', 'icmp_redirects'] }
-    ];
+    // Helper: render a flat key-value list
+    function renderFields(parentObj, fields) {
+        var content = html('div');
+        fields.forEach(function(field) {
+            var value = parentObj[field];
+            if (value === undefined) return;
+            var row = html('div', { className: 'flex justify-between items-center', style: 'padding:8px 0;border-bottom:1px solid var(--border)' });
+            row.appendChild(html('span', { className: 'form-label', style: 'margin:0;text-transform:none' }, field));
+            if (typeof value === 'boolean') {
+                row.appendChild(html('span', { className: value ? 'badge badge-success' : 'badge badge-muted' },
+                    value ? 'Enabled' : 'Disabled'));
+            } else if (Array.isArray(value)) {
+                row.appendChild(html('span', { className: 'mono' }, value.join(', ') || '(none)'));
+            } else {
+                row.appendChild(html('span', { className: 'mono' }, String(value)));
+            }
+            content.appendChild(row);
+        });
+        return content;
+    }
 
-    sections.forEach(function(section, idx) {
-        var collapse = createCollapsible(section.title, function() {
-            var content = html('div');
-            section.fields.forEach(function(field) {
-                var value = cfg[field];
-                if (value === undefined) return;
-                var row = html('div', { className: 'flex justify-between items-center', style: 'padding:8px 0;border-bottom:1px solid var(--border)' });
-                row.appendChild(html('span', { className: 'form-label', style: 'margin:0;text-transform:none' }, field));
-                if (typeof value === 'boolean') {
-                    row.appendChild(html('span', { className: value ? 'badge badge-success' : 'badge badge-muted' },
-                        value ? 'Enabled' : 'Disabled'));
-                } else {
-                    row.appendChild(html('span', { className: 'mono' }, String(value)));
-                }
-                content.appendChild(row);
-            });
-            return content;
-        }, idx === 0);
-        container.appendChild(collapse);
-    });
+    // General section (top-level keys)
+    var generalCollapse = createCollapsible('General', function() {
+        return renderFields(cfg, ['version', 'language', 'backend']);
+    }, true);
+    container.appendChild(generalCollapse);
+
+    // Interfaces section (nested under cfg.interfaces)
+    var ifCollapse = createCollapsible('Interfaces', function() {
+        var ifaces = cfg.interfaces || {};
+        return renderFields(ifaces, Object.keys(ifaces));
+    }, false);
+    container.appendChild(ifCollapse);
+
+    // DNS section (cfg.dns_servers is an array)
+    var dnsCollapse = createCollapsible('DNS', function() {
+        var content = html('div');
+        var servers = cfg.dns_servers || [];
+        var row = html('div', { className: 'flex justify-between items-center', style: 'padding:8px 0;border-bottom:1px solid var(--border)' });
+        row.appendChild(html('span', { className: 'form-label', style: 'margin:0;text-transform:none' }, 'dns_servers'));
+        row.appendChild(html('span', { className: 'mono' }, servers.join(', ') || '(none)'));
+        content.appendChild(row);
+        return content;
+    }, false);
+    container.appendChild(dnsCollapse);
+
+    // Network Ranges section (nested under cfg.ranges)
+    var rangesCollapse = createCollapsible('Network Ranges', function() {
+        var ranges = cfg.ranges || {};
+        return renderFields(ranges, Object.keys(ranges));
+    }, false);
+    container.appendChild(rangesCollapse);
+
+    // Sysctl section (nested under cfg.sysctl)
+    var sysctlCollapse = createCollapsible('Sysctl', function() {
+        var sysctl = cfg.sysctl || {};
+        return renderFields(sysctl, Object.keys(sysctl));
+    }, false);
+    container.appendChild(sysctlCollapse);
 
     // Filter chains section
-    var chainCollapse = createCollapsible('Filter Chains (25)', function() {
+    var filterChainsObj = cfg.filter || {};
+    var chainCount = Object.keys(filterChainsObj).length;
+    var chainCollapse = createCollapsible('Filter Chains (' + chainCount + ')', function() {
         var content = html('div');
         var zones = ['fw', 'lan', 'wan', 'dmz', 'vpns'];
         var filterCfg = cfg.filter || {};
