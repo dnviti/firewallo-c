@@ -184,7 +184,7 @@ int fw_validate_addr_field(const char *addr)
 int fw_validate_mark(const char *mark)
 {
     if (!mark || !*mark)
-        return 0;
+        return 1; /* Empty/NULL is OK (optional field) */
 
     const char *p = mark;
 

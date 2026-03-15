@@ -825,6 +825,10 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "invalid to_source in NAT postrouting rule %d: %s", i, r->to_source);
             return -1;
         }
+        if (!fw_validate_comment(r->comment)) {
+            snprintf(err, errlen, "invalid comment in NAT postrouting rule %d", i);
+            return -1;
+        }
     }
 
     /* Validate NAT prerouting rules */
@@ -848,6 +852,10 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
         if (!fw_validate_port(r->to_dest_port)) {
             snprintf(err, errlen, "invalid to_dest_port in NAT prerouting rule %d: %d", i, r->to_dest_port);
+            return -1;
+        }
+        if (!fw_validate_comment(r->comment)) {
+            snprintf(err, errlen, "invalid comment in NAT prerouting rule %d", i);
             return -1;
         }
     }
@@ -890,22 +898,6 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate NAT postrouting comments */
-    for (int i = 0; i < cfg->nat_post_count; i++) {
-        if (!fw_validate_comment(cfg->nat_post[i].comment)) {
-            snprintf(err, errlen, "invalid comment in NAT postrouting rule %d", i);
-            return -1;
-        }
-    }
-
-    /* Validate NAT prerouting comments */
-    for (int i = 0; i < cfg->nat_pre_count; i++) {
-        if (!fw_validate_comment(cfg->nat_pre[i].comment)) {
-            snprintf(err, errlen, "invalid comment in NAT prerouting rule %d", i);
-            return -1;
-        }
-    }
-
     /* Validate mangle rules */
     for (int i = 0; i < cfg->mangle_pre_count; i++) {
         const fw_mangle_rule_t *r = &cfg->mangle_pre[i];
@@ -921,7 +913,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "invalid dst_addr in mangle prerouting rule %d: %s", i, r->dst_addr);
             return -1;
         }
-        if (r->mark[0] && !fw_validate_mark(r->mark)) {
+        if (!fw_validate_mark(r->mark)) {
             snprintf(err, errlen, "invalid mark in mangle prerouting rule %d: %s", i, r->mark);
             return -1;
         }
@@ -944,7 +936,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "invalid dst_addr in mangle postrouting rule %d: %s", i, r->dst_addr);
             return -1;
         }
-        if (r->mark[0] && !fw_validate_mark(r->mark)) {
+        if (!fw_validate_mark(r->mark)) {
             snprintf(err, errlen, "invalid mark in mangle postrouting rule %d: %s", i, r->mark);
             return -1;
         }

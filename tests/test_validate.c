@@ -132,6 +132,55 @@ static void test_comment(void)
     ASSERT(fw_validate_comment("rule`cmd`") == 0, "backtick");
 }
 
+static void test_addr_field(void)
+{
+    printf("test_addr_field\n");
+    /* NULL and empty are valid (optional field) */
+    ASSERT(fw_validate_addr_field(NULL) == 1, "null ok");
+    ASSERT(fw_validate_addr_field("") == 1, "empty ok");
+
+    /* Valid IPv4 addresses */
+    ASSERT(fw_validate_addr_field("192.168.1.1") == 1, "valid ipv4");
+    ASSERT(fw_validate_addr_field("10.0.0.1") == 1, "valid 10.x");
+
+    /* Valid CIDR */
+    ASSERT(fw_validate_addr_field("192.168.1.0/24") == 1, "valid cidr");
+    ASSERT(fw_validate_addr_field("10.0.0.0/8") == 1, "valid /8 cidr");
+
+    /* Invalid */
+    ASSERT(fw_validate_addr_field("999.999.999.999") == 0, "invalid ip");
+    ASSERT(fw_validate_addr_field("abc") == 0, "letters");
+    ASSERT(fw_validate_addr_field("192.168.1.0/33") == 0, "bad cidr mask");
+    ASSERT(fw_validate_addr_field("192.168.1") == 0, "incomplete ip");
+}
+
+static void test_mark(void)
+{
+    printf("test_mark\n");
+    /* NULL and empty are valid (optional field) */
+    ASSERT(fw_validate_mark(NULL) == 1, "null ok");
+    ASSERT(fw_validate_mark("") == 1, "empty ok");
+
+    /* Valid decimal */
+    ASSERT(fw_validate_mark("0") == 1, "zero");
+    ASSERT(fw_validate_mark("1") == 1, "one");
+    ASSERT(fw_validate_mark("42") == 1, "decimal 42");
+    ASSERT(fw_validate_mark("65535") == 1, "large decimal");
+
+    /* Valid hex */
+    ASSERT(fw_validate_mark("0x1") == 1, "hex 0x1");
+    ASSERT(fw_validate_mark("0xFF") == 1, "hex 0xFF");
+    ASSERT(fw_validate_mark("0X10") == 1, "hex 0X10");
+    ASSERT(fw_validate_mark("0xDEAD") == 1, "hex 0xDEAD");
+
+    /* Invalid */
+    ASSERT(fw_validate_mark("abc") == 0, "bare letters");
+    ASSERT(fw_validate_mark("0x") == 0, "hex prefix only");
+    ASSERT(fw_validate_mark("0xGG") == 0, "invalid hex digits");
+    ASSERT(fw_validate_mark("-1") == 0, "negative");
+    ASSERT(fw_validate_mark("12abc") == 0, "mixed decimal/letters");
+}
+
 int main(void)
 {
     printf("=== Validator Tests ===\n\n");
@@ -144,6 +193,8 @@ int main(void)
     test_protocol();
     test_action();
     test_comment();
+    test_addr_field();
+    test_mark();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
