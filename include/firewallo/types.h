@@ -18,6 +18,9 @@
 #define FW_MAX_VERSION      32
 #define FW_MAX_PROTOCOLS    64
 #define FW_CHAIN_COUNT      25
+#define FW_MAX_WEBHOOKS      8
+#define FW_MAX_WEBHOOK_URL 512
+#define FW_MAX_WEBHOOK_SECRET 128
 
 /* Zones */
 typedef enum {
@@ -159,6 +162,27 @@ typedef struct {
     char comment[FW_MAX_COMMENT];
 } fw_dpi_rule_t;
 
+/* Webhook event types (bitmask) */
+typedef enum {
+    WH_EVENT_CONFIG_CHANGE = 1,
+    WH_EVENT_RULE_APPLY    = 2,
+    WH_EVENT_INTRUSION     = 4,
+    WH_EVENT_VPN_STATUS    = 8,
+    WH_EVENT_SURICATA      = 16,
+    WH_EVENT_SERVICE       = 32,
+    WH_EVENT_ALL           = 63
+} fw_webhook_event_t;
+
+/* Webhook endpoint */
+typedef struct {
+    char url[FW_MAX_WEBHOOK_URL];
+    char secret[FW_MAX_WEBHOOK_SECRET];
+    unsigned int events;
+    int enabled;
+    int retry_count;
+    char comment[FW_MAX_COMMENT];
+} fw_webhook_t;
+
 /* Master configuration */
 typedef struct {
     char version[FW_MAX_VERSION];
@@ -224,6 +248,10 @@ typedef struct {
     int block_6to4;
     int block_teredo;
     int block_isatap;
+
+    /* Webhooks */
+    fw_webhook_t webhooks[FW_MAX_WEBHOOKS];
+    int webhook_count;
 } fw_config_t;
 
 #endif /* FIREWALLO_TYPES_H */
