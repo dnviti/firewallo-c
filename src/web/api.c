@@ -371,6 +371,24 @@ static void api_put_ratelimit(httpd_t *srv, const char *chain_name,
 
     json_free(body);
 
+    /* When enabling, validate that all required fields have valid values,
+     * even if they were not supplied in this request (they may have been
+     * left at zero from a previous disabled state). */
+    if (rl->enabled) {
+        if (rl->max_connections <= 0) {
+            api_error(resp, 400, "max must be positive when enabled");
+            return;
+        }
+        if (rl->period_seconds <= 0) {
+            api_error(resp, 400, "period must be positive when enabled");
+            return;
+        }
+        if (rl->ban_seconds <= 0) {
+            api_error(resp, 400, "ban must be positive when enabled");
+            return;
+        }
+    }
+
     if (save_config(srv, resp) != 0) return;
     api_ok_msg(resp, "Rate limit updated");
 }

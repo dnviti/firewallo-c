@@ -256,6 +256,181 @@ static void test_compile_full_config(void)
     fw_cmdlist_free(&out);
 }
 
+static void test_compile_rate_limit_nft(void)
+{
+    printf("test_compile_rate_limit_nft\n");
+    fw_config_t cfg;
+    char err[256];
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load config");
+    ASSERT(cfg.backend == BACKEND_NFT, "backend is nft");
+
+    /* Enable rate limiting on wan2fw chain */
+    int idx = fw_config_chain_index("wan2fw");
+    ASSERT(idx >= 0, "wan2fw chain exists");
+    cfg.chains[idx].rate_limit.enabled = 1;
+    cfg.chains[idx].rate_limit.max_connections = 5;
+    cfg.chains[idx].rate_limit.period_seconds = 60;
+    cfg.chains[idx].rate_limit.ban_seconds = 300;
+
+    fw_cmdlist_t out;
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds");
+
+    /* nft: dynamic set with timeout for banned IPs */
+    ASSERT(cmdlist_contains(&out, "add set ip filter ratelimit_wan2fw"),
+           "nft has ratelimit set for wan2fw");
+    ASSERT(cmdlist_contains(&out, "timeout 300s"),
+           "nft ratelimit set has correct ban timeout");
+
+    /* nft: drop rule for IPs already in the ban set */
+    ASSERT(cmdlist_contains(&out, "@ratelimit_wan2fw"),
+           "nft has rule referencing ratelimit set");
+    ASSERT(cmdlist_contains(&out, "RATELIMIT BAN wan2fw"),
+           "nft has ban log prefix");
+
+    /* nft: meter for per-source-IP rate tracking */
+    ASSERT(cmdlist_contains(&out, "meter ratelimit_meter_wan2fw"),
+           "nft uses meter for per-source-IP rate limiting");
+    ASSERT(cmdlist_contains(&out, "ip saddr limit rate over"),
+           "nft meter is keyed on ip saddr");
+
+    /* nft: add offending IPs to the ban set and drop */
+    ASSERT(cmdlist_contains(&out, "RATELIMIT ADD wan2fw"),
+           "nft has add-to-set log prefix");
+
+    /* Verify rate conversion: 5 connections per 60s -> 5/minute */
+    ASSERT(cmdlist_contains(&out, "5/minute"),
+           "nft rate is correctly computed as 5/minute");
+
+    fw_cmdlist_free(&out);
+}
+
+static void test_compile_rate_limit_ipt(void)
+{
+    printf("test_compile_rate_limit_ipt\n");
+    fw_config_t cfg;
+    char err[256];
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load config");
+    cfg.backend = BACKEND_IPT;
+
+    /* Enable rate limiting on wan2fw chain */
+    int idx = fw_config_chain_index("wan2fw");
+    ASSERT(idx >= 0, "wan2fw chain exists");
+    cfg.chains[idx].rate_limit.enabled = 1;
+    cfg.chains[idx].rate_limit.max_connections = 10;
+    cfg.chains[idx].rate_limit.period_seconds = 30;
+    cfg.chains[idx].rate_limit.ban_seconds = 600;
+
+    fw_cmdlist_t out;
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds");
+
+    /* ipt: recent module --rcheck for already-banned IPs */
+    ASSERT(cmdlist_contains(&out, "-m recent --name ratelimit_wan2fw --rcheck"),
+           "ipt has rcheck for banned IPs");
+    ASSERT(cmdlist_contains(&out, "--seconds 600"),
+           "ipt uses correct ban_seconds");
+
+    /* ipt: recent module --set must have a target (-j RETURN) */
+    ASSERT(cmdlist_contains(&out, "--set -j RETURN"),
+           "ipt --set rule has -j RETURN target");
+
+    /* ipt: recent module --update to detect rate exceeded */
+    ASSERT(cmdlist_contains(&out, "-m recent --name ratelimit_wan2fw --update"),
+           "ipt has --update rule for rate detection");
+    ASSERT(cmdlist_contains(&out, "--seconds 30"),
+           "ipt uses correct period_seconds");
+    ASSERT(cmdlist_contains(&out, "--hitcount 11"),
+           "ipt hitcount is max_connections + 1");
+
+    /* ipt: LOG and DROP for rate-limited IPs */
+    ASSERT(cmdlist_contains(&out, "RATELIMIT BAN wan2fw"),
+           "ipt has ban log prefix");
+    ASSERT(cmdlist_contains(&out, "RATELIMIT ADD wan2fw"),
+           "ipt has add log prefix");
+
+    fw_cmdlist_free(&out);
+}
+
+static void test_compile_rate_limit_period_mapping(void)
+{
+    printf("test_compile_rate_limit_period_mapping\n");
+    fw_config_t cfg;
+    char err[256];
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load config");
+    ASSERT(cfg.backend == BACKEND_NFT, "backend is nft");
+
+    int idx = fw_config_chain_index("lan2fw");
+    ASSERT(idx >= 0, "lan2fw chain exists");
+
+    fw_cmdlist_t out;
+
+    /* Test period_seconds=1 -> rate per second */
+    cfg.chains[idx].rate_limit.enabled = 1;
+    cfg.chains[idx].rate_limit.max_connections = 3;
+    cfg.chains[idx].rate_limit.period_seconds = 1;
+    cfg.chains[idx].rate_limit.ban_seconds = 60;
+
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds (1s period)");
+    ASSERT(cmdlist_contains(&out, "3/second"),
+           "period_seconds=1 maps to /second");
+    fw_cmdlist_free(&out);
+
+    /* Test period_seconds=10 -> scaled to /minute */
+    cfg.chains[idx].rate_limit.period_seconds = 10;
+    cfg.chains[idx].rate_limit.max_connections = 5;
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds (10s period)");
+    ASSERT(cmdlist_contains(&out, "30/minute"),
+           "period_seconds=10, max=5 maps to 30/minute (5*60/10)");
+    fw_cmdlist_free(&out);
+
+    /* Test period_seconds=3600 -> rate per hour */
+    cfg.chains[idx].rate_limit.period_seconds = 3600;
+    cfg.chains[idx].rate_limit.max_connections = 100;
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds (3600s period)");
+    ASSERT(cmdlist_contains(&out, "100/hour"),
+           "period_seconds=3600, max=100 maps to 100/hour");
+    fw_cmdlist_free(&out);
+
+    /* Test period_seconds=120 -> scaled to /hour */
+    cfg.chains[idx].rate_limit.period_seconds = 120;
+    cfg.chains[idx].rate_limit.max_connections = 10;
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds (120s period)");
+    ASSERT(cmdlist_contains(&out, "300/hour"),
+           "period_seconds=120, max=10 maps to 300/hour (10*3600/120)");
+    fw_cmdlist_free(&out);
+
+    /* Disable rate limit to leave config clean */
+    cfg.chains[idx].rate_limit.enabled = 0;
+}
+
+static void test_compile_rate_limit_disabled(void)
+{
+    printf("test_compile_rate_limit_disabled\n");
+    fw_config_t cfg;
+    char err[256];
+    int ret = fw_config_load("tests/fixtures/minimal.json", &cfg, err, sizeof(err));
+    ASSERT(ret == 0, "load config");
+
+    /* Ensure no rate limit rules appear when disabled (default) */
+    fw_cmdlist_t out;
+    ret = fw_compile_start(&cfg, &out);
+    ASSERT(ret == 0, "compile start succeeds");
+    ASSERT(!cmdlist_contains(&out, "RATELIMIT"),
+           "no ratelimit commands when disabled");
+    ASSERT(!cmdlist_contains(&out, "ratelimit_"),
+           "no ratelimit sets/meters when disabled");
+
+    fw_cmdlist_free(&out);
+}
+
 static void test_backend_get(void)
 {
     printf("test_backend_get\n");
@@ -279,6 +454,10 @@ int main(void)
     test_compile_stop();
     test_compile_reset();
     test_compile_full_config();
+    test_compile_rate_limit_nft();
+    test_compile_rate_limit_ipt();
+    test_compile_rate_limit_period_mapping();
+    test_compile_rate_limit_disabled();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

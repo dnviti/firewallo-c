@@ -342,15 +342,34 @@ static void nft_add_rate_limit(fw_cmdlist_t *out, const char *chain,
              chain, chain, chain);
     nft_cmd(out, rule);
 
-    /* Add IPs exceeding the rate to the ban set */
+    /* Use a meter keyed on ip saddr so rate limiting is per-source-IP.
+     * Compute an equivalent rate+unit that respects period_seconds:
+     *   - period <= 1s   -> rate/second
+     *   - period <= 60s  -> (max * 60/period)/minute
+     *   - otherwise      -> (max * 3600/period)/hour
+     * This preserves the configured semantics instead of collapsing
+     * arbitrary periods into a single unit. */
+    const char *unit;
+    int rate;
+    if (rl->period_seconds <= 1) {
+        rate = rl->max_connections;
+        unit = "second";
+    } else if (rl->period_seconds <= 60) {
+        rate = rl->max_connections * 60 / rl->period_seconds;
+        if (rate < 1) rate = 1;
+        unit = "minute";
+    } else {
+        rate = rl->max_connections * 3600 / rl->period_seconds;
+        if (rate < 1) rate = 1;
+        unit = "hour";
+    }
+
     snprintf(rule, sizeof(rule),
              "add rule ip filter %s ct state new "
-             "limit rate over %d/%s burst %d packets "
+             "meter ratelimit_meter_%s { ip saddr limit rate over %d/%s burst %d packets } "
              "add @ratelimit_%s { ip saddr } "
              "log prefix \\\"RATELIMIT ADD %s : \\\" counter drop",
-             chain, rl->max_connections,
-             rl->period_seconds <= 1 ? "second" :
-             rl->period_seconds <= 60 ? "minute" : "hour",
+             chain, chain, rate, unit,
              rl->max_connections, chain, chain);
     nft_cmd(out, rule);
 }

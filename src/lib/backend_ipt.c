@@ -349,10 +349,12 @@ static void ipt_add_rate_limit(fw_cmdlist_t *out, const char *chain,
         "--seconds %d --hitcount %d -j DROP",
         IPT, chain, chain, rl->ban_seconds, rl->max_connections + 1);
 
-    /* Track new connections with the recent module */
+    /* Track new connections with the recent module.
+     * --set must have a terminating target; RETURN continues normal
+     * chain evaluation after marking the source address. */
     fw_cmdlist_append(out,
         "%s -A %s -m state --state NEW "
-        "-m recent --name ratelimit_%s --set",
+        "-m recent --name ratelimit_%s --set -j RETURN",
         IPT, chain, chain);
 
     /* Drop if rate exceeded within the period */
