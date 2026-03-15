@@ -633,9 +633,9 @@ static json_value_t *build_routes_array(const fw_route_t *routes, int count)
     return arr;
 }
 
-/* ── Save ──────────────────────────────────────────────────────────── */
+/* ── Serialize ─────────────────────────────────────────────────────── */
 
-int fw_config_save(const char *path, const fw_config_t *cfg)
+static json_value_t *config_to_json(const fw_config_t *cfg)
 {
     json_value_t *root = json_new_object();
 
@@ -735,10 +735,24 @@ int fw_config_save(const char *path, const fw_config_t *cfg)
                                        cfg->suricata_blocked_count));
     json_object_set(root, "suricata", suricata);
 
-    /* Serialize and write */
+    return root;
+}
+
+char *fw_config_serialize(const fw_config_t *cfg)
+{
+    json_value_t *root = config_to_json(cfg);
+    if (!root)
+        return NULL;
     char *json_str = json_serialize(root, 1);
     json_free(root);
+    return json_str;
+}
 
+/* ── Save ──────────────────────────────────────────────────────────── */
+
+int fw_config_save(const char *path, const fw_config_t *cfg)
+{
+    char *json_str = fw_config_serialize(cfg);
     if (!json_str)
         return -1;
 
