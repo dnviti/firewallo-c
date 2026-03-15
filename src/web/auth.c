@@ -27,8 +27,14 @@ static void strip_whitespace(char *s)
 
 int auth_load_token(const char *token_path, char *token_buf, size_t buf_size)
 {
-    if (!token_path || !token_buf || buf_size == 0)
+    if (!token_buf || buf_size == 0)
         return -1;
+
+    /* NULL path disables authentication — leave token buffer empty */
+    if (!token_path) {
+        token_buf[0] = '\0';
+        return 0;
+    }
 
     token_buf[0] = '\0';
 
@@ -52,6 +58,15 @@ int auth_load_token(const char *token_path, char *token_buf, size_t buf_size)
     if (!fgets(token_buf, (int)buf_size, fp)) {
         fclose(fp);
         fw_log(LOG_ERROR, "auth: token file is empty: %s", token_path);
+        return -1;
+    }
+
+    /* Detect truncation: if no newline and not at EOF, the token was too long */
+    if (!strchr(token_buf, '\n') && !feof(fp)) {
+        fclose(fp);
+        fw_log(LOG_ERROR, "auth: token too long (exceeds %zu byte buffer): %s",
+               buf_size - 1, token_path);
+        token_buf[0] = '\0';
         return -1;
     }
     fclose(fp);
@@ -132,6 +147,11 @@ int auth_generate_token(const char *token_path)
     if (fd < 0) {
         fw_log(LOG_ERROR, "auth: cannot create token file: %s", token_path);
         return -1;
+    }
+
+    /* Enforce 0600 even if the file already existed with broader permissions */
+    if (fchmod(fd, 0600) != 0) {
+        fw_log(LOG_WARN, "auth: failed to set permissions on token file: %s", token_path);
     }
 
     size_t len = (size_t)token_len;
