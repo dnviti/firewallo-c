@@ -1,6 +1,8 @@
 #ifndef FIREWALLO_VALIDATE_H
 #define FIREWALLO_VALIDATE_H
 
+#include "firewallo/types.h"
+
 /* All validators return 1 if valid, 0 if invalid */
 
 /* Validate IPv4 address (e.g. "192.168.1.1") */
@@ -9,11 +11,26 @@ int fw_validate_ipv4(const char *ip);
 /* Validate IPv4 with CIDR mask (e.g. "192.168.1.0/24") */
 int fw_validate_ipv4_cidr(const char *cidr);
 
+/* Validate IPv6 address (e.g. "2001:db8::1", "::1", "fe80::1") */
+int fw_validate_ipv6(const char *ip);
+
+/* Validate IPv6 with CIDR prefix (e.g. "2001:db8::/32") */
+int fw_validate_ipv6_cidr(const char *cidr);
+
+/* Validate any IP address — auto-detect v4 or v6 */
+int fw_validate_ip(const char *ip);
+
+/* Validate any IP/CIDR — auto-detect v4 or v6 */
+int fw_validate_ip_cidr(const char *cidr);
+
 /* Validate port number (1-65535) */
 int fw_validate_port(int port);
 
 /* Validate port range string (e.g. "1024" or "1024:2000" or "any") */
 int fw_validate_port_range(const char *range);
+
+/* Validate single numeric port string (e.g. "80", "443"). Rejects "any" and ranges. */
+int fw_validate_port_single(const char *port_str);
 
 /* Validate network interface name (e.g. "eth0", "ens18", "wg0") */
 int fw_validate_interface(const char *ifname);
@@ -32,5 +49,8 @@ int fw_validate_addr_field(const char *addr);
 
 /* Validate mangle mark (hex string like "0x1" or decimal) */
 int fw_validate_mark(const char *mark);
+
+/* Validate a time-based schedule (hour 0-23, minute 0-59, valid day bitmask) */
+int fw_validate_schedule(const fw_schedule_t *sched);
 
 #endif /* FIREWALLO_VALIDATE_H */

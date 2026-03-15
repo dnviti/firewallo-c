@@ -165,6 +165,39 @@ static int parse_request(const char *raw, size_t raw_len, http_request_t *req)
                 vlen = sizeof(req->authorization) - 1;
             memcpy(req->authorization, val, vlen);
             req->authorization[vlen] = '\0';
+        } else if (strncasecmp(h, "Host:", 5) == 0) {
+            const char *val = h + 5;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->host))
+                vlen = sizeof(req->host) - 1;
+            memcpy(req->host, val, vlen);
+            req->host[vlen] = '\0';
+        } else if (strncasecmp(h, "Origin:", 7) == 0) {
+            const char *val = h + 7;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->origin))
+                vlen = sizeof(req->origin) - 1;
+            memcpy(req->origin, val, vlen);
+            req->origin[vlen] = '\0';
+        } else if (strncasecmp(h, "Referer:", 8) == 0 && req->origin[0] == '\0') {
+            /* Use Referer as fallback if Origin was not set */
+            const char *val = h + 8;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->origin))
+                vlen = sizeof(req->origin) - 1;
+            memcpy(req->origin, val, vlen);
+            req->origin[vlen] = '\0';
+        } else if (strncasecmp(h, "X-Requested-With:", 17) == 0) {
+            const char *val = h + 17;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->x_requested_with))
+                vlen = sizeof(req->x_requested_with) - 1;
+            memcpy(req->x_requested_with, val, vlen);
+            req->x_requested_with[vlen] = '\0';
         }
         h = nl + 2;
     }
@@ -313,6 +346,28 @@ static void handle_connection(httpd_t *srv, int client_fd)
     close(client_fd);
 }
 
+/*
+ * ── TLS / Transport Security Notice ────────────────────────────────
+ *
+ * This HTTP server does NOT support TLS.  All traffic is transmitted in
+ * cleartext.  In production deployments the server MUST be placed behind
+ * a TLS-terminating reverse proxy such as nginx, Caddy, or HAProxy.
+ *
+ * Example (nginx):
+ *   server {
+ *       listen 443 ssl;
+ *       ssl_certificate     /etc/ssl/certs/firewallo.pem;
+ *       ssl_certificate_key /etc/ssl/private/firewallo.key;
+ *       location / { proxy_pass http://127.0.0.1:8080; }
+ *   }
+ *
+ * Bind the server to 127.0.0.1 (-b 127.0.0.1) so it is only reachable
+ * through the reverse proxy and not directly from the network.
+ *
+ * Adding native TLS would require an external library (OpenSSL, mbedTLS)
+ * which conflicts with the project's "no external dependencies" policy.
+ * ─────────────────────────────────────────────────────────────────── */
+
 /* ── Server init ───────────────────────────────────────────────────── */
 
 int httpd_init(httpd_t *srv, const char *bind_addr, int port,
@@ -373,6 +428,15 @@ int httpd_run(httpd_t *srv)
 {
     fw_log(LOG_INFO, "firewallo-web listening on %s:%d",
            srv->bind_addr ? srv->bind_addr : "0.0.0.0", srv->port);
+
+    /* SEC-011: Single consolidated TLS / bind-address startup warning */
+    const char *addr = srv->bind_addr ? srv->bind_addr : "0.0.0.0";
+    int exposed = (strcmp(addr, "0.0.0.0") == 0);
+    fw_log(LOG_WARN,
+           "Listening on %s:%d over plain HTTP (no TLS).%s "
+           "Place behind a TLS reverse proxy (nginx/Caddy/HAProxy) for production.",
+           addr, srv->port,
+           exposed ? " Server is reachable from all interfaces in cleartext." : "");
 
     /* Install SIGCHLD handler to set reap flag */
     struct sigaction sa;

@@ -2,10 +2,94 @@
 #include "firewallo/api.h"
 #include "firewallo/auth.h"
 #include "firewallo/static_serve.h"
+#include "firewallo/log.h"
 #include "firewallo/util.h"
 #include "firewallo/log.h"
 #include <stdio.h>
 #include <string.h>
+
+/*
+ * Extract the host portion from a URL or Host header value.
+ * For "http://example.com:8080/path", extracts "example.com:8080".
+ * For "example.com:8080", returns as-is.
+ * Result is written to dst (up to dst_size bytes).
+ */
+static void extract_host(const char *src, char *dst, size_t dst_size)
+{
+    if (dst_size == 0) return;
+    dst[0] = '\0';
+
+    if (!src || src[0] == '\0') return;
+
+    /* Skip scheme (http:// or https://) if present */
+    const char *host = src;
+    const char *scheme_end = strstr(src, "://");
+    if (scheme_end)
+        host = scheme_end + 3;
+
+    /* Copy up to the first '/' (path start) or end of string */
+    size_t i = 0;
+    while (host[i] != '\0' && host[i] != '/' && i < dst_size - 1) {
+        dst[i] = host[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+/*
+ * CSRF protection for state-changing methods (POST, PUT, DELETE).
+ * Returns 0 if the request is allowed, -1 if it should be rejected.
+ *
+ * Defence-in-depth strategy:
+ * 1. Accept if the request carries a custom header (X-Requested-With).
+ *    Browsers cannot send custom headers on simple cross-origin requests;
+ *    a CORS preflight would be required, and the server sends no
+ *    Access-Control-Allow-Origin header, so the preflight will fail.
+ * 2. Otherwise, require a same-origin Origin/Referer header that matches
+ *    the Host header.
+ * 3. If neither is present, reject — a browser-initiated cross-origin
+ *    form POST can arrive without Origin/Referer on some user agents.
+ */
+static int csrf_check(const http_request_t *req)
+{
+    /* Only check state-changing methods */
+    if (strcmp(req->method, "POST") != 0 &&
+        strcmp(req->method, "PUT") != 0 &&
+        strcmp(req->method, "DELETE") != 0)
+        return 0;
+
+    /* Custom header present => request required a CORS preflight, allow */
+    if (req->x_requested_with[0] != '\0')
+        return 0;
+
+    /* No Origin/Referer and no custom header => reject */
+    if (req->origin[0] == '\0') {
+        fw_log(LOG_WARN, "CSRF: rejecting %s %s — "
+               "no X-Requested-With header and no Origin/Referer",
+               req->method, req->path);
+        return -1;
+    }
+
+    /* No Host header => can't verify origin, reject */
+    if (req->host[0] == '\0') {
+        fw_log(LOG_WARN, "CSRF: rejecting %s %s — no Host header to verify against",
+               req->method, req->path);
+        return -1;
+    }
+
+    /* Extract host portion from Origin (strips scheme and path) */
+    char origin_host[256];
+    extract_host(req->origin, origin_host, sizeof(origin_host));
+
+    /* Compare origin host with Host header */
+    if (strcasecmp(origin_host, req->host) != 0) {
+        fw_log(LOG_WARN, "CSRF: rejecting %s %s — origin '%s' does not match host '%s'",
+               req->method, req->path, origin_host, req->host);
+        return -1;
+    }
+
+    return 0;
+}
 
 int router_dispatch(httpd_t *srv, const http_request_t *req, http_response_t *resp)
 {
@@ -20,6 +104,18 @@ int router_dispatch(httpd_t *srv, const http_request_t *req, http_response_t *re
                 resp->body_owned = 0;
             } else {
                 http_response_set_json(resp, 401, err);
+            }
+            return 0;
+        }
+        /* CSRF protection: reject cross-origin state-changing requests */
+        if (csrf_check(req) != 0) {
+            char *err = strdup("{\"error\":true,\"message\":\"Cross-origin request rejected\"}");
+            if (!err) {
+                http_response_set_json(resp, 403,
+                    (char *)"{\"error\":true,\"message\":\"Cross-origin request rejected\"}");
+                resp->body_owned = 0;
+            } else {
+                http_response_set_json(resp, 403, err);
             }
             return 0;
         }

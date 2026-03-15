@@ -30,6 +30,13 @@ typedef struct {
     /* ICMP */
     void (*add_icmp_rules)(fw_cmdlist_t *out);
 
+    /* ICMPv6 essential traffic (NS/NA/RS/RA) */
+    void (*add_icmpv6_rules)(fw_cmdlist_t *out);
+
+    /* IPv6 transition mechanism filtering (6to4/Teredo/ISATAP) */
+    void (*add_transition_filter)(fw_cmdlist_t *out, int block_6to4,
+                                  int block_teredo, int block_isatap);
+
     /* DPI queue */
     void (*add_dpi_queue)(fw_cmdlist_t *out);
 
@@ -59,6 +66,10 @@ typedef struct {
 
     /* Mangle table setup */
     void (*create_mangle_table)(fw_cmdlist_t *out);
+
+    /* Rate limiting */
+    void (*add_rate_limit)(fw_cmdlist_t *out, const char *chain,
+                           const fw_rate_limit_t *rl);
 
     /* Stop/Reset */
     void (*setup_stop)(fw_cmdlist_t *out);

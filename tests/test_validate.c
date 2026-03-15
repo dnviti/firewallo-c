@@ -1,5 +1,6 @@
 #include "firewallo/validate.h"
 #include <stdio.h>
+#include <string.h>
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -119,6 +120,59 @@ static void test_action(void)
     ASSERT(fw_validate_action(NULL) == 0, "null");
 }
 
+static void test_ipv6(void)
+{
+    printf("test_ipv6\n");
+    ASSERT(fw_validate_ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334") == 1, "full IPv6");
+    ASSERT(fw_validate_ipv6("2001:db8:85a3::8a2e:370:7334") == 1, "compressed IPv6");
+    ASSERT(fw_validate_ipv6("::1") == 1, "loopback");
+    ASSERT(fw_validate_ipv6("::") == 1, "all zeros");
+    ASSERT(fw_validate_ipv6("fe80::1") == 1, "link-local");
+    ASSERT(fw_validate_ipv6("ff02::1") == 1, "multicast");
+    ASSERT(fw_validate_ipv6("2001:db8::") == 1, "trailing ::");
+    ASSERT(fw_validate_ipv6("::ffff:192.0.2.1") == 0, "mapped IPv4 not supported");
+
+    ASSERT(fw_validate_ipv6("") == 0, "empty");
+    ASSERT(fw_validate_ipv6(NULL) == 0, "null");
+    ASSERT(fw_validate_ipv6("2001:db8::85a3::7334") == 0, "double ::");
+    ASSERT(fw_validate_ipv6("12345::1") == 0, "group > 4 digits");
+    ASSERT(fw_validate_ipv6(":1") == 0, "single leading colon");
+    ASSERT(fw_validate_ipv6("1:") == 0, "trailing single colon");
+    ASSERT(fw_validate_ipv6("gggg::1") == 0, "invalid hex");
+    ASSERT(fw_validate_ipv6("192.168.1.1") == 0, "IPv4 address");
+}
+
+static void test_ipv6_cidr(void)
+{
+    printf("test_ipv6_cidr\n");
+    ASSERT(fw_validate_ipv6_cidr("2001:db8::/32") == 1, "valid /32");
+    ASSERT(fw_validate_ipv6_cidr("::1/128") == 1, "valid /128");
+    ASSERT(fw_validate_ipv6_cidr("::/0") == 1, "valid /0");
+    ASSERT(fw_validate_ipv6_cidr("fe80::/10") == 1, "link-local /10");
+
+    ASSERT(fw_validate_ipv6_cidr("2001:db8::") == 0, "no prefix");
+    ASSERT(fw_validate_ipv6_cidr("2001:db8::/129") == 0, "prefix > 128");
+    ASSERT(fw_validate_ipv6_cidr("2001:db8::/-1") == 0, "negative prefix");
+    ASSERT(fw_validate_ipv6_cidr("/64") == 0, "no address");
+    ASSERT(fw_validate_ipv6_cidr("") == 0, "empty");
+    ASSERT(fw_validate_ipv6_cidr(NULL) == 0, "null");
+}
+
+static void test_ip_auto(void)
+{
+    printf("test_ip_auto\n");
+    ASSERT(fw_validate_ip("192.168.1.1") == 1, "auto-detect IPv4");
+    ASSERT(fw_validate_ip("2001:db8::1") == 1, "auto-detect IPv6");
+    ASSERT(fw_validate_ip("::1") == 1, "auto-detect loopback v6");
+    ASSERT(fw_validate_ip("") == 0, "auto-detect empty");
+    ASSERT(fw_validate_ip(NULL) == 0, "auto-detect null");
+
+    ASSERT(fw_validate_ip_cidr("192.168.1.0/24") == 1, "auto-detect IPv4 CIDR");
+    ASSERT(fw_validate_ip_cidr("2001:db8::/32") == 1, "auto-detect IPv6 CIDR");
+    ASSERT(fw_validate_ip_cidr("") == 0, "auto-detect CIDR empty");
+    ASSERT(fw_validate_ip_cidr(NULL) == 0, "auto-detect CIDR null");
+}
+
 static void test_comment(void)
 {
     printf("test_comment\n");
@@ -181,12 +235,93 @@ static void test_mark(void)
     ASSERT(fw_validate_mark("12abc") == 0, "mixed decimal/letters");
 }
 
+static void test_schedule(void)
+{
+    printf("test_schedule\n");
+
+    /* Valid schedules */
+    fw_schedule_t sched;
+    memset(&sched, 0, sizeof(sched));
+
+    /* Disabled schedule is always valid */
+    sched.enabled = 0;
+    ASSERT(fw_validate_schedule(&sched) == 1, "disabled schedule is valid");
+
+    /* Valid enabled schedule: Mon-Fri 08:00-17:00 */
+    sched.enabled = 1;
+    sched.hour_start = 8;
+    sched.minute_start = 0;
+    sched.hour_end = 17;
+    sched.minute_end = 0;
+    sched.days = 0x1F; /* Mon-Fri = bits 0-4 */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid weekday schedule");
+
+    /* Valid: all days, midnight to midnight */
+    sched.hour_start = 0;
+    sched.minute_start = 0;
+    sched.hour_end = 23;
+    sched.minute_end = 59;
+    sched.days = 0x7F; /* all days */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid full schedule");
+
+    /* Valid: single day */
+    sched.days = 0x01; /* Monday only */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid single day");
+
+    /* Valid: Sunday only */
+    sched.days = 0x40; /* bit 6 = Sunday */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid Sunday only");
+
+    /* Invalid: NULL */
+    ASSERT(fw_validate_schedule(NULL) == 0, "null schedule");
+
+    /* Invalid: hour out of range */
+    sched.hour_start = 24;
+    sched.days = 0x1F;
+    ASSERT(fw_validate_schedule(&sched) == 0, "hour_start 24");
+    sched.hour_start = 8;
+
+    sched.hour_end = 25;
+    ASSERT(fw_validate_schedule(&sched) == 0, "hour_end 25");
+    sched.hour_end = 17;
+
+    /* Invalid: negative hour */
+    sched.hour_start = -1;
+    ASSERT(fw_validate_schedule(&sched) == 0, "negative hour_start");
+    sched.hour_start = 8;
+
+    /* Invalid: minute out of range */
+    sched.minute_start = 60;
+    ASSERT(fw_validate_schedule(&sched) == 0, "minute_start 60");
+    sched.minute_start = 0;
+
+    sched.minute_end = 99;
+    ASSERT(fw_validate_schedule(&sched) == 0, "minute_end 99");
+    sched.minute_end = 0;
+
+    /* Invalid: negative minute */
+    sched.minute_end = -1;
+    ASSERT(fw_validate_schedule(&sched) == 0, "negative minute_end");
+    sched.minute_end = 0;
+
+    /* Invalid: no days set */
+    sched.days = 0;
+    ASSERT(fw_validate_schedule(&sched) == 0, "no days set");
+
+    /* Invalid: bits outside 0-6 */
+    sched.days = 0x80;
+    ASSERT(fw_validate_schedule(&sched) == 0, "invalid day bit 7");
+}
+
 int main(void)
 {
     printf("=== Validator Tests ===\n\n");
 
     test_ipv4();
     test_ipv4_cidr();
+    test_ipv6();
+    test_ipv6_cidr();
+    test_ip_auto();
     test_port();
     test_port_range();
     test_interface();
@@ -195,6 +330,7 @@ int main(void)
     test_comment();
     test_addr_field();
     test_mark();
+    test_schedule();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

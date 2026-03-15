@@ -1,9 +1,13 @@
 #include "firewallo/api.h"
+#include "firewallo/api_common.h"
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/rollback.h"
 #include "firewallo/sysctl.h"
 #include "firewallo/validate.h"
+#include "firewallo/webhook.h"
+#include "firewallo/alias.h"
 #include "firewallo/util.h"
 #include "firewallo/diff.h"
 #include "firewallo/log.h"
@@ -11,12 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
 static const char API_ERR_FALLBACK[] = "{\"error\":true,\"message\":\"internal error\"}";
 
-static void api_error(http_response_t *resp, int status, const char *msg)
+void api_error(http_response_t *resp, int status, const char *msg)
 {
     json_value_t *envelope = json_new_object();
     if (!envelope) {
@@ -51,7 +56,7 @@ static void api_error(http_response_t *resp, int status, const char *msg)
     http_response_set_json(resp, status, json);
 }
 
-static void api_ok_json(http_response_t *resp, json_value_t *data)
+void api_ok_json(http_response_t *resp, json_value_t *data)
 {
     json_value_t *envelope = json_new_object();
     json_object_set(envelope, "error", json_new_bool(0));
@@ -61,7 +66,7 @@ static void api_ok_json(http_response_t *resp, json_value_t *data)
     http_response_set_json(resp, 200, json);
 }
 
-static void api_ok_msg(http_response_t *resp, const char *msg)
+void api_ok_msg(http_response_t *resp, const char *msg)
 {
     json_value_t *data = json_new_object();
     json_object_set(data, "message", json_new_string(msg));
@@ -78,6 +83,12 @@ static int save_config(httpd_t *srv, http_response_t *resp)
     return 0;
 }
 
+/* Non-static alias for api_vpn.c and other API modules */
+int api_save_config(httpd_t *srv, http_response_t *resp)
+{
+    return save_config(srv, resp);
+}
+
 /* Extract path segment after prefix. Returns pointer into path string. */
 static const char *path_after(const char *path, const char *prefix)
 {
@@ -85,6 +96,22 @@ static const char *path_after(const char *path, const char *prefix)
     if (strncmp(path, prefix, plen) == 0)
         return path + plen;
     return NULL;
+}
+
+/* Non-static alias for api_vpn.c and other API modules */
+const char *api_path_after(const char *path, const char *prefix)
+{
+    return path_after(path, prefix);
+}
+
+int api_read_sysctl(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int val = 0;
+    if (fscanf(f, "%d", &val) != 1) val = -1;
+    fclose(f);
+    return val;
 }
 
 /* ── GET /api/v1/version ───────────────────────────────────────────── */
@@ -102,8 +129,33 @@ static void api_version(httpd_t *srv, http_response_t *resp)
 
 static void api_get_config(httpd_t *srv, http_response_t *resp)
 {
-    /* Serialize config directly to memory — no temp files needed */
-    char *json = fw_config_serialize(srv->config);
+    /* Make a copy and redact secrets before serialization */
+    fw_config_t redacted = *srv->config;
+    for (int i = 0; i < redacted.webhook_count; i++) {
+        if (redacted.webhooks[i].secret[0])
+            fw_strlcpy(redacted.webhooks[i].secret, "***",
+                        sizeof(redacted.webhooks[i].secret));
+    }
+    /* Redact VPN private keys and PSKs */
+    for (int i = 0; i < redacted.vpn_tunnel_count; i++) {
+        if (redacted.vpn_tunnels[i].wg_private_key[0])
+            fw_strlcpy(redacted.vpn_tunnels[i].wg_private_key, "[REDACTED]",
+                        sizeof(redacted.vpn_tunnels[i].wg_private_key));
+        if (redacted.vpn_tunnels[i].wg_preshared_key[0])
+            fw_strlcpy(redacted.vpn_tunnels[i].wg_preshared_key, "[REDACTED]",
+                        sizeof(redacted.vpn_tunnels[i].wg_preshared_key));
+        if (redacted.vpn_tunnels[i].ipsec_psk[0])
+            fw_strlcpy(redacted.vpn_tunnels[i].ipsec_psk, "[REDACTED]",
+                        sizeof(redacted.vpn_tunnels[i].ipsec_psk));
+    }
+    for (int i = 0; i < redacted.vpn_peer_count; i++) {
+        if (redacted.vpn_peers[i].preshared_key[0])
+            fw_strlcpy(redacted.vpn_peers[i].preshared_key, "[REDACTED]",
+                        sizeof(redacted.vpn_peers[i].preshared_key));
+    }
+
+    /* Serialize redacted config directly to memory — no temp files needed */
+    char *json = fw_config_serialize(&redacted);
     if (!json) {
         api_error(resp, 500, "Serialization failed");
         return;
@@ -293,11 +345,124 @@ static void api_get_filter_chain(httpd_t *srv, const char *chain_name, http_resp
         json_object_set(obj, "action", json_new_string(
             r->action == ACTION_DROP ? "drop" : r->action == ACTION_REJECT ? "reject" : "accept"));
         json_object_set(obj, "comment", json_new_string(r->comment));
+
+        /* Include schedule if enabled */
+        if (r->schedule.enabled) {
+            json_value_t *sched = json_new_object();
+            json_object_set(sched, "enabled", json_new_bool(1));
+            char tbuf[8];
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d",
+                     r->schedule.hour_start, r->schedule.minute_start);
+            json_object_set(sched, "start", json_new_string(tbuf));
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d",
+                     r->schedule.hour_end, r->schedule.minute_end);
+            json_object_set(sched, "end", json_new_string(tbuf));
+
+            static const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+            char days_str[64];
+            fw_schedule_days_str(r->schedule.days, days_str, sizeof(days_str), day_names, ",");
+            json_object_set(sched, "days", json_new_string(days_str));
+            json_object_set(obj, "schedule", sched);
+        }
+
         json_array_append(rules, obj);
     }
     json_object_set(data, "rules", rules);
 
     api_ok_json(resp, data);
+}
+
+/* ── GET /api/v1/filter/{chain}/ratelimit ───────────────────────────── */
+
+static void api_get_ratelimit(httpd_t *srv, const char *chain_name, http_response_t *resp)
+{
+    int idx = fw_config_chain_index(chain_name);
+    if (idx < 0) { api_error(resp, 404, "Chain not found"); return; }
+
+    const fw_rate_limit_t *rl = &srv->config->chains[idx].rate_limit;
+    json_value_t *data = json_new_object();
+    json_object_set(data, "enabled", json_new_bool(rl->enabled));
+    json_object_set(data, "max", json_new_number(rl->max_connections));
+    json_object_set(data, "period", json_new_number(rl->period_seconds));
+    json_object_set(data, "ban", json_new_number(rl->ban_seconds));
+    api_ok_json(resp, data);
+}
+
+/* ── PUT /api/v1/filter/{chain}/ratelimit ──────────────────────────── */
+
+static void api_put_ratelimit(httpd_t *srv, const char *chain_name,
+                               const http_request_t *req, http_response_t *resp)
+{
+    int idx = fw_config_chain_index(chain_name);
+    if (idx < 0) { api_error(resp, 404, "Chain not found"); return; }
+
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    fw_rate_limit_t *rl = &srv->config->chains[idx].rate_limit;
+
+    json_value_t *v;
+    v = json_object_get(body, "enabled");
+    if (v) rl->enabled = json_bool_value(v);
+
+    v = json_object_get(body, "max");
+    if (v && v->type == JSON_NUMBER) {
+        int val = (int)json_number_value(v);
+        if (val <= 0 && rl->enabled) {
+            json_free(body);
+            api_error(resp, 400, "max must be positive when enabled");
+            return;
+        }
+        rl->max_connections = val;
+    }
+
+    v = json_object_get(body, "period");
+    if (v && v->type == JSON_NUMBER) {
+        int val = (int)json_number_value(v);
+        if (val <= 0 && rl->enabled) {
+            json_free(body);
+            api_error(resp, 400, "period must be positive when enabled");
+            return;
+        }
+        rl->period_seconds = val;
+    }
+
+    v = json_object_get(body, "ban");
+    if (v && v->type == JSON_NUMBER) {
+        int val = (int)json_number_value(v);
+        if (val <= 0 && rl->enabled) {
+            json_free(body);
+            api_error(resp, 400, "ban must be positive when enabled");
+            return;
+        }
+        rl->ban_seconds = val;
+    }
+
+    json_free(body);
+
+    /* When enabling, validate that all required fields have valid values,
+     * even if they were not supplied in this request (they may have been
+     * left at zero from a previous disabled state). */
+    if (rl->enabled) {
+        if (rl->max_connections <= 0) {
+            api_error(resp, 400, "max must be positive when enabled");
+            return;
+        }
+        if (rl->period_seconds <= 0) {
+            api_error(resp, 400, "period must be positive when enabled");
+            return;
+        }
+        if (rl->ban_seconds <= 0) {
+            api_error(resp, 400, "ban must be positive when enabled");
+            return;
+        }
+    }
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Rate limit updated");
 }
 
 /* ── POST /api/v1/filter/{chain}/tcp ───────────────────────────────── */
@@ -418,12 +583,38 @@ static void api_get_nat(httpd_t *srv, http_response_t *resp)
 
 /* ── POST /api/v1/firewall/{action} ───────────────────────────────── */
 
-static void api_firewall_action(httpd_t *srv, const char *action, http_response_t *resp)
+static void api_firewall_action(httpd_t *srv, const char *action,
+                                 const http_request_t *req, http_response_t *resp)
 {
+    /* Check for optional rollback_timeout in request body */
+    int rollback_timeout = 0;
+    if (req->body && req->body_len > 0) {
+        char perr[256];
+        json_value_t *body = json_parse(req->body, perr, sizeof(perr));
+        if (body) {
+            json_value_t *tv = json_object_get(body, "rollback_timeout");
+            if (tv && tv->type == JSON_NUMBER)
+                rollback_timeout = (int)json_number_value(tv);
+            json_free(body);
+        }
+    }
+
+    /* Set up rollback for start/restart if requested (comment 2) */
+    int use_rollback = (rollback_timeout > 0 &&
+                        (strcmp(action, "start") == 0 || strcmp(action, "restart") == 0));
+    if (use_rollback) {
+        fw_rollback_set_context(srv->config, srv->config_path);
+        if (fw_rollback_start(rollback_timeout) != 0) {
+            api_error(resp, 500, "Failed to start rollback timer");
+            return;
+        }
+    }
+
     fw_cmdlist_t cmds;
     if (strcmp(action, "start") == 0) {
         char err[256];
         if (fw_config_validate(srv->config, err, sizeof(err)) != 0) {
+            if (use_rollback) fw_rollback_cancel();
             api_error(resp, 400, err);
             return;
         }
@@ -452,14 +643,23 @@ static void api_firewall_action(httpd_t *srv, const char *action, http_response_
     fw_cmdlist_free(&cmds);
 
     if (ret != 0) {
+        if (use_rollback) {
+            fw_rollback_perform();
+        }
         char msg[128];
         snprintf(msg, sizeof(msg), "Command failed at index %d", fail_idx);
         api_error(resp, 500, msg);
         return;
     }
 
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Firewall %s completed", action);
+    char msg[128];
+    if (use_rollback) {
+        snprintf(msg, sizeof(msg),
+                 "Firewall %s completed, confirm within %d seconds",
+                 action, rollback_timeout);
+    } else {
+        snprintf(msg, sizeof(msg), "Firewall %s completed", action);
+    }
     api_ok_msg(resp, msg);
 }
 
@@ -603,17 +803,502 @@ static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
     api_ok_json(resp, data);
 }
 
+/* ── POST /api/v1/firewall/confirm ─────────────────────────────────── */
+
+static void api_firewall_confirm(http_response_t *resp)
+{
+    if (fw_rollback_confirm() != 0) {
+        api_error(resp, 400, "No pending rollback to confirm");
+        return;
+    }
+    api_ok_msg(resp, "Configuration confirmed, rollback timer cancelled");
+}
+
+/* ── GET /api/v1/firewall/rollback-status ──────────────────────────── */
+
+static void api_firewall_rollback_status(http_response_t *resp)
+{
+    fw_rollback_state_t state;
+    fw_rollback_status(&state);
+
+    json_value_t *data = json_new_object();
+    json_object_set(data, "pending", json_new_bool(state.pending));
+
+    if (state.pending) {
+        time_t now = time(NULL);
+        int remaining = (int)(state.deadline - now);
+        if (remaining < 0) remaining = 0;
+        json_object_set(data, "remaining_seconds", json_new_number(remaining));
+        json_object_set(data, "deadline", json_new_number((double)state.deadline));
+    } else {
+        json_object_set(data, "remaining_seconds", json_new_number(0));
+        json_object_set(data, "deadline", json_new_number(0));
+    }
+
+    api_ok_json(resp, data);
+}
+
+/* ── GET /api/v1/config/webhooks ───────────────────────────────────── */
+
+static void api_get_webhooks(httpd_t *srv, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    json_value_t *arr = json_new_array();
+    for (int i = 0; i < cfg->webhook_count; i++) {
+        const fw_webhook_t *w = &cfg->webhooks[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "url", json_new_string(w->url));
+        /* Redact secret: show only "***" if set */
+        json_object_set(obj, "secret", json_new_string(w->secret[0] ? "***" : ""));
+        json_object_set(obj, "events", json_new_number(w->events));
+        json_object_set(obj, "enabled", json_new_bool(w->enabled));
+        json_object_set(obj, "retry_count", json_new_number(w->retry_count));
+        json_object_set(obj, "comment", json_new_string(w->comment));
+        json_array_append(arr, obj);
+    }
+    api_ok_json(resp, arr);
+}
+
+/* ── POST /api/v1/config/webhooks ─────────────────────────────────── */
+
+static void api_add_webhook(httpd_t *srv, const http_request_t *req, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    if (cfg->webhook_count >= FW_MAX_WEBHOOKS) {
+        api_error(resp, 400, "Max webhooks reached");
+        return;
+    }
+
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    fw_webhook_t *w = &cfg->webhooks[cfg->webhook_count];
+    memset(w, 0, sizeof(*w));
+
+    const char *s;
+    s = json_string_value(json_object_get(body, "url"));
+    if (!s || !fw_webhook_validate_url(s)) {
+        json_free(body);
+        api_error(resp, 400, "Invalid or missing 'url'");
+        return;
+    }
+    fw_strlcpy(w->url, s, sizeof(w->url));
+
+    s = json_string_value(json_object_get(body, "secret"));
+    if (s) {
+        if (!fw_webhook_validate_secret(s)) {
+            json_free(body);
+            api_error(resp, 400, "Secret contains invalid control characters");
+            return;
+        }
+        fw_strlcpy(w->secret, s, sizeof(w->secret));
+    }
+
+    json_value_t *ev = json_object_get(body, "events");
+    if (ev && ev->type == JSON_NUMBER)
+        w->events = (unsigned int)json_number_value(ev);
+    else
+        w->events = WH_EVENT_ALL;
+
+    if (!fw_webhook_validate_events(w->events)) {
+        json_free(body);
+        api_error(resp, 400, "Invalid event mask");
+        return;
+    }
+
+    json_value_t *en = json_object_get(body, "enabled");
+    if (en)
+        w->enabled = json_bool_value(en);
+    else
+        w->enabled = 1;
+
+    json_value_t *rc = json_object_get(body, "retry_count");
+    if (rc && rc->type == JSON_NUMBER) {
+        int rcv = (int)json_number_value(rc);
+        if (rcv < 0 || rcv > FW_MAX_WEBHOOK_RETRY) {
+            json_free(body);
+            api_error(resp, 400, "retry_count must be 0-5");
+            return;
+        }
+        w->retry_count = rcv;
+    } else {
+        w->retry_count = 3;
+    }
+
+    s = json_string_value(json_object_get(body, "comment"));
+    if (s) fw_strlcpy(w->comment, s, sizeof(w->comment));
+
+    json_free(body);
+
+    cfg->webhook_count++;
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Webhook added");
+}
+
+/* ── PUT /api/v1/config/webhooks/{index} ──────────────────────────── */
+
+static void api_update_webhook(httpd_t *srv, int idx,
+                                const http_request_t *req, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    if (idx < 0 || idx >= cfg->webhook_count) {
+        api_error(resp, 404, "Webhook index out of range");
+        return;
+    }
+
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    fw_webhook_t *w = &cfg->webhooks[idx];
+
+    const char *s;
+    s = json_string_value(json_object_get(body, "url"));
+    if (s) {
+        if (!fw_webhook_validate_url(s)) {
+            json_free(body);
+            api_error(resp, 400, "Invalid 'url'");
+            return;
+        }
+        fw_strlcpy(w->url, s, sizeof(w->url));
+    }
+
+    s = json_string_value(json_object_get(body, "secret"));
+    if (s && strcmp(s, "***") != 0) {
+        if (!fw_webhook_validate_secret(s)) {
+            json_free(body);
+            api_error(resp, 400, "Secret contains invalid control characters");
+            return;
+        }
+        fw_strlcpy(w->secret, s, sizeof(w->secret));
+    }
+    /* "***" means "unchanged" — skip updating the secret */
+
+    json_value_t *ev = json_object_get(body, "events");
+    if (ev && ev->type == JSON_NUMBER) {
+        unsigned int events = (unsigned int)json_number_value(ev);
+        if (!fw_webhook_validate_events(events)) {
+            json_free(body);
+            api_error(resp, 400, "Invalid event mask");
+            return;
+        }
+        w->events = events;
+    }
+
+    json_value_t *en = json_object_get(body, "enabled");
+    if (en) w->enabled = json_bool_value(en);
+
+    json_value_t *rc = json_object_get(body, "retry_count");
+    if (rc && rc->type == JSON_NUMBER) {
+        int rcv = (int)json_number_value(rc);
+        if (rcv < 0 || rcv > FW_MAX_WEBHOOK_RETRY) {
+            json_free(body);
+            api_error(resp, 400, "retry_count must be 0-5");
+            return;
+        }
+        w->retry_count = rcv;
+    }
+
+    s = json_string_value(json_object_get(body, "comment"));
+    if (s) fw_strlcpy(w->comment, s, sizeof(w->comment));
+
+    json_free(body);
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Webhook updated");
+}
+
+/* ── DELETE /api/v1/config/webhooks/{index} ───────────────────────── */
+
+static void api_delete_webhook(httpd_t *srv, int idx, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    if (idx < 0 || idx >= cfg->webhook_count) {
+        api_error(resp, 404, "Webhook index out of range");
+        return;
+    }
+
+    /* Shift remaining webhooks */
+    for (int i = idx; i < cfg->webhook_count - 1; i++)
+        cfg->webhooks[i] = cfg->webhooks[i + 1];
+    cfg->webhook_count--;
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Webhook deleted");
+}
+
+/* ── POST /api/v1/config/webhooks/{index}/test ────────────────────── */
+
+static void api_test_webhook(httpd_t *srv, int idx, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    if (idx < 0 || idx >= cfg->webhook_count) {
+        api_error(resp, 404, "Webhook index out of range");
+        return;
+    }
+
+    int status = fw_webhook_test(&cfg->webhooks[idx]);
+    json_value_t *data = json_new_object();
+    json_object_set(data, "webhook_index", json_new_number(idx));
+    json_object_set(data, "http_status", json_new_number(status));
+    json_object_set(data, "success", json_new_bool(status >= 200 && status < 300));
+    api_ok_json(resp, data);
+}
+
+/* ── GET /api/v1/config/aliases ─────────────────────────────────────── */
+
+static void api_get_aliases(httpd_t *srv, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    json_value_t *arr = json_new_array();
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "name", json_new_string(a->name));
+        json_object_set(obj, "type",
+                        json_new_string(a->type == ALIAS_TYPE_PORT ? "port" : "ip"));
+        json_value_t *entries = json_new_array();
+        for (int e = 0; e < a->entry_count; e++)
+            json_array_append(entries, json_new_string(a->entries[e]));
+        json_object_set(obj, "entries", entries);
+        json_object_set(obj, "comment", json_new_string(a->comment));
+        json_array_append(arr, obj);
+    }
+    api_ok_json(resp, arr);
+}
+
+/* ── GET /api/v1/config/aliases/{name} ─────────────────────────────── */
+
+static void api_get_alias(httpd_t *srv, const char *name, http_response_t *resp)
+{
+    const fw_alias_t *a = fw_alias_find(srv->config, name);
+    if (!a) { api_error(resp, 404, "Alias not found"); return; }
+
+    json_value_t *obj = json_new_object();
+    json_object_set(obj, "name", json_new_string(a->name));
+    json_object_set(obj, "type",
+                    json_new_string(a->type == ALIAS_TYPE_PORT ? "port" : "ip"));
+    json_value_t *entries = json_new_array();
+    for (int e = 0; e < a->entry_count; e++)
+        json_array_append(entries, json_new_string(a->entries[e]));
+    json_object_set(obj, "entries", entries);
+    json_object_set(obj, "comment", json_new_string(a->comment));
+    api_ok_json(resp, obj);
+}
+
+/* ── POST /api/v1/config/aliases ───────────────────────────────────── */
+
+static void api_create_alias(httpd_t *srv, const http_request_t *req, http_response_t *resp)
+{
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    fw_config_t *cfg = srv->config;
+    if (cfg->alias_count >= FW_MAX_ALIASES) {
+        json_free(body);
+        api_error(resp, 400, "Max aliases reached");
+        return;
+    }
+
+    const char *name = json_string_value(json_object_get(body, "name"));
+    if (!name || !fw_alias_validate_name(name)) {
+        json_free(body);
+        api_error(resp, 400, "Invalid alias name");
+        return;
+    }
+
+    /* Check duplicate */
+    if (fw_alias_find(cfg, name)) {
+        json_free(body);
+        api_error(resp, 400, "Alias already exists");
+        return;
+    }
+
+    /* Require explicit valid type */
+    const char *type_str = json_string_value(json_object_get(body, "type"));
+    if (!type_str || (strcmp(type_str, "ip") != 0 && strcmp(type_str, "port") != 0)) {
+        json_free(body);
+        api_error(resp, 400, "Field 'type' must be 'ip' or 'port'");
+        return;
+    }
+
+    fw_alias_t a;
+    memset(&a, 0, sizeof(a));
+    fw_strlcpy(a.name, name, sizeof(a.name));
+    a.type = (strcmp(type_str, "port") == 0) ? ALIAS_TYPE_PORT : ALIAS_TYPE_IP;
+
+    json_value_t *entries = json_object_get(body, "entries");
+    if (entries && entries->type == JSON_ARRAY) {
+        int n = json_array_count(entries);
+        for (int i = 0; i < n && a.entry_count < FW_MAX_ALIAS_ENTRIES; i++) {
+            const char *e = json_string_value(json_array_get(entries, i));
+            if (e) {
+                fw_strlcpy(a.entries[a.entry_count], e, FW_MAX_ADDR);
+                a.entry_count++;
+            }
+        }
+    }
+
+    /* Validate entries match type */
+    if (a.entry_count == 0) {
+        json_free(body);
+        api_error(resp, 400, "Alias must have at least one entry");
+        return;
+    }
+    for (int i = 0; i < a.entry_count; i++) {
+        if (a.type == ALIAS_TYPE_IP) {
+            if (!fw_validate_ipv4(a.entries[i]) &&
+                !fw_validate_ipv4_cidr(a.entries[i])) {
+                json_free(body);
+                api_error(resp, 400, "Invalid IP entry in alias");
+                return;
+            }
+        } else {
+            if (!fw_validate_port_single(a.entries[i])) {
+                json_free(body);
+                api_error(resp, 400, "Invalid port entry in alias (single numeric port required)");
+                return;
+            }
+        }
+    }
+
+    const char *comment = json_string_value(json_object_get(body, "comment"));
+    if (comment) fw_strlcpy(a.comment, comment, sizeof(a.comment));
+
+    cfg->aliases[cfg->alias_count] = a;
+    cfg->alias_count++;
+    json_free(body);
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Alias created");
+}
+
+/* ── PUT /api/v1/config/aliases/{name} ─────────────────────────────── */
+
+static void api_update_alias(httpd_t *srv, const char *name,
+                              const http_request_t *req, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    fw_alias_t *a = NULL;
+    for (int i = 0; i < cfg->alias_count; i++) {
+        if (strcmp(cfg->aliases[i].name, name) == 0) {
+            a = &cfg->aliases[i];
+            break;
+        }
+    }
+    if (!a) { api_error(resp, 404, "Alias not found"); return; }
+
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    /* Parse and validate entries before applying */
+    json_value_t *entries = json_object_get(body, "entries");
+    if (entries && entries->type == JSON_ARRAY) {
+        /* Validate entries in a temporary buffer before overwriting */
+        char tmp_entries[FW_MAX_ALIAS_ENTRIES][FW_MAX_ADDR];
+        int tmp_count = 0;
+        int n = json_array_count(entries);
+        for (int i = 0; i < n && tmp_count < FW_MAX_ALIAS_ENTRIES; i++) {
+            const char *e = json_string_value(json_array_get(entries, i));
+            if (e) {
+                fw_strlcpy(tmp_entries[tmp_count], e, FW_MAX_ADDR);
+                tmp_count++;
+            }
+        }
+        if (tmp_count == 0) {
+            json_free(body);
+            api_error(resp, 400, "Alias must have at least one entry");
+            return;
+        }
+        for (int i = 0; i < tmp_count; i++) {
+            if (a->type == ALIAS_TYPE_IP) {
+                if (!fw_validate_ipv4(tmp_entries[i]) &&
+                    !fw_validate_ipv4_cidr(tmp_entries[i])) {
+                    json_free(body);
+                    api_error(resp, 400, "Invalid IP entry in alias");
+                    return;
+                }
+            } else {
+                if (!fw_validate_port_single(tmp_entries[i])) {
+                    json_free(body);
+                    api_error(resp, 400, "Invalid port entry in alias (single numeric port required)");
+                    return;
+                }
+            }
+        }
+        /* Validation passed, apply entries */
+        a->entry_count = tmp_count;
+        for (int i = 0; i < tmp_count; i++)
+            fw_strlcpy(a->entries[i], tmp_entries[i], FW_MAX_ADDR);
+    }
+
+    /* Update comment if provided */
+    const char *comment = json_string_value(json_object_get(body, "comment"));
+    if (comment) fw_strlcpy(a->comment, comment, sizeof(a->comment));
+
+    json_free(body);
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Alias updated");
+}
+
+/* ── DELETE /api/v1/config/aliases/{name} ──────────────────────────── */
+
+static void api_delete_alias(httpd_t *srv, const char *name, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    int found = -1;
+    for (int i = 0; i < cfg->alias_count; i++) {
+        if (strcmp(cfg->aliases[i].name, name) == 0) {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0) { api_error(resp, 404, "Alias not found"); return; }
+
+    /* Check if alias is referenced by any filter rules */
+    if (fw_alias_is_referenced(cfg, name)) {
+        api_error(resp, 409, "Alias is referenced by filter rules and cannot be deleted");
+        return;
+    }
+
+    /* Remove by shifting */
+    for (int i = found; i < cfg->alias_count - 1; i++)
+        cfg->aliases[i] = cfg->aliases[i + 1];
+    cfg->alias_count--;
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Alias deleted");
+}
+
 /* ── Main API dispatcher ──────────────────────────────────────────── */
 
 int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
 {
     const char *path = req->path + 8; /* skip "/api/v1/" */
     const char *method = req->method;
+    const char *sub;
 
     /* GET /api/v1/version */
     if (strcmp(path, "version") == 0 && strcmp(method, "GET") == 0) {
         api_version(srv, resp);
         return 0;
+    }
+
+    /* Backup/snapshot endpoints: /api/v1/config/snapshots... */
+    if (strncmp(path, "config/snapshots", 16) == 0) {
+        return api_handle_backup(srv, req, resp);
     }
 
     /* GET/PUT /api/v1/config */
@@ -644,6 +1329,78 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         return 0;
     }
 
+    /* GET/POST /api/v1/config/webhooks */
+    if (strcmp(path, "config/webhooks") == 0) {
+        if (strcmp(method, "GET") == 0) api_get_webhooks(srv, resp);
+        else if (strcmp(method, "POST") == 0) api_add_webhook(srv, req, resp);
+        else api_error(resp, 405, "Method not allowed");
+        return 0;
+    }
+
+    /* PUT/DELETE /api/v1/config/webhooks/{index}[/test] */
+    if ((sub = path_after(path, "config/webhooks/")) != NULL) {
+        /* Extract the index segment and parse with strtol */
+        const char *slash = strchr(sub, '/');
+        const char *idx_str = sub;
+        char idx_buf[8];
+        if (slash) {
+            size_t ilen = (size_t)(slash - sub);
+            if (ilen == 0 || ilen >= sizeof(idx_buf)) {
+                api_error(resp, 400, "Invalid webhook index");
+                return 0;
+            }
+            memcpy(idx_buf, sub, ilen);
+            idx_buf[ilen] = '\0';
+            idx_str = idx_buf;
+        }
+
+        char *endptr = NULL;
+        long widx_l = strtol(idx_str, &endptr, 10);
+        if (endptr == idx_str || *endptr != '\0' ||
+            widx_l < 0 || widx_l > FW_MAX_WEBHOOKS) {
+            api_error(resp, 400, "Invalid webhook index");
+            return 0;
+        }
+        int widx = (int)widx_l;
+
+        if (slash) {
+            if (strcmp(slash + 1, "test") == 0 && strcmp(method, "POST") == 0) {
+                api_test_webhook(srv, widx, resp);
+                return 0;
+            }
+        } else {
+            if (strcmp(method, "PUT") == 0) {
+                api_update_webhook(srv, widx, req, resp);
+                return 0;
+            }
+            if (strcmp(method, "DELETE") == 0) {
+                api_delete_webhook(srv, widx, resp);
+                return 0;
+            }
+        }
+        api_error(resp, 404, "Webhook endpoint not found");
+        return 0;
+    }
+
+    /* GET/POST /api/v1/config/aliases */
+    if (strcmp(path, "config/aliases") == 0) {
+        if (strcmp(method, "GET") == 0) api_get_aliases(srv, resp);
+        else if (strcmp(method, "POST") == 0) api_create_alias(srv, req, resp);
+        else api_error(resp, 405, "Method not allowed");
+        return 0;
+    }
+
+    /* GET/PUT/DELETE /api/v1/config/aliases/{name} */
+    if ((sub = path_after(path, "config/aliases/")) != NULL) {
+        char alias_name[FW_MAX_ALIAS_NAME];
+        fw_strlcpy(alias_name, sub, sizeof(alias_name));
+        if (strcmp(method, "GET") == 0) api_get_alias(srv, alias_name, resp);
+        else if (strcmp(method, "PUT") == 0) api_update_alias(srv, alias_name, req, resp);
+        else if (strcmp(method, "DELETE") == 0) api_delete_alias(srv, alias_name, resp);
+        else api_error(resp, 405, "Method not allowed");
+        return 0;
+    }
+
     /* GET /api/v1/filter */
     if (strcmp(path, "filter") == 0 && strcmp(method, "GET") == 0) {
         api_get_filter_overview(srv, resp);
@@ -651,7 +1408,6 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
     }
 
     /* GET /api/v1/filter/{chain} */
-    const char *sub;
     if ((sub = path_after(path, "filter/")) != NULL) {
         /* Parse chain name and sub-resource */
         char chain_name[32];
@@ -674,6 +1430,17 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         chain_name[clen] = '\0';
 
         const char *resource = slash + 1;
+
+        /* GET/PUT /api/v1/filter/{chain}/ratelimit */
+        if (strcmp(resource, "ratelimit") == 0) {
+            if (strcmp(method, "GET") == 0)
+                api_get_ratelimit(srv, chain_name, resp);
+            else if (strcmp(method, "PUT") == 0)
+                api_put_ratelimit(srv, chain_name, req, resp);
+            else
+                api_error(resp, 405, "Method not allowed");
+            return 0;
+        }
 
         /* POST /api/v1/filter/{chain}/tcp */
         if (strcmp(resource, "tcp") == 0 && strcmp(method, "POST") == 0) {
@@ -738,11 +1505,19 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
             api_firewall_preview(srv, resp);
             return 0;
         }
+        if (strcmp(sub, "confirm") == 0 && strcmp(method, "POST") == 0) {
+            api_firewall_confirm(resp);
+            return 0;
+        }
+        if (strcmp(sub, "rollback-status") == 0 && strcmp(method, "GET") == 0) {
+            api_firewall_rollback_status(resp);
+            return 0;
+        }
         if (strcmp(method, "POST") == 0) {
             /* sub is start/stop/restart/reset */
             char action[16];
             fw_strlcpy(action, sub, sizeof(action));
-            api_firewall_action(srv, action, resp);
+            api_firewall_action(srv, action, req, resp);
             return 0;
         }
     }
@@ -756,6 +1531,12 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
     /* /api/v1/monitor/... */
     if ((sub = path_after(path, "monitor/")) != NULL) {
         return api_handle_monitor(srv, req, resp, sub);
+    }
+
+    /* /api/v1/vpn/... */
+    if (strncmp(path, "vpn/", 4) == 0 || strcmp(path, "vpn") == 0) {
+        if (api_handle_vpn(srv, req, resp, path, method))
+            return 0;
     }
 
     api_error(resp, 404, "API endpoint not found");

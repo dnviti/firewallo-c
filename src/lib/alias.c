@@ -1,0 +1,117 @@
+#include "firewallo/alias.h"
+#include "firewallo/validate.h"
+#include "firewallo/util.h"
+#include <string.h>
+#include <ctype.h>
+
+const fw_alias_t *fw_alias_find(const fw_config_t *cfg, const char *name)
+{
+    if (!cfg || !name)
+        return NULL;
+
+    for (int i = 0; i < cfg->alias_count; i++) {
+        if (strcmp(cfg->aliases[i].name, name) == 0)
+            return &cfg->aliases[i];
+    }
+    return NULL;
+}
+
+int fw_alias_is_ref(const char *s)
+{
+    return s && s[0] == '$' && s[1] != '\0';
+}
+
+int fw_alias_resolve_ip(const fw_config_t *cfg, const char *ref,
+                        char out_entries[][FW_MAX_ADDR], int max_entries)
+{
+    if (!fw_alias_is_ref(ref))
+        return -1;
+
+    const char *name = ref + 1; /* skip '$' */
+    const fw_alias_t *alias = fw_alias_find(cfg, name);
+    if (!alias)
+        return -1;
+
+    if (alias->type != ALIAS_TYPE_IP)
+        return -1;
+
+    int count = alias->entry_count;
+    if (count > max_entries)
+        count = max_entries;
+
+    for (int i = 0; i < count; i++)
+        fw_strlcpy(out_entries[i], alias->entries[i], FW_MAX_ADDR);
+
+    return count;
+}
+
+int fw_alias_resolve_port(const fw_config_t *cfg, const char *ref,
+                          char out_entries[][FW_MAX_ADDR], int max_entries)
+{
+    if (!fw_alias_is_ref(ref))
+        return -1;
+
+    const char *name = ref + 1; /* skip '$' */
+    const fw_alias_t *alias = fw_alias_find(cfg, name);
+    if (!alias)
+        return -1;
+
+    if (alias->type != ALIAS_TYPE_PORT)
+        return -1;
+
+    int count = alias->entry_count;
+    if (count > max_entries)
+        count = max_entries;
+
+    for (int i = 0; i < count; i++)
+        fw_strlcpy(out_entries[i], alias->entries[i], FW_MAX_ADDR);
+
+    return count;
+}
+
+int fw_alias_is_referenced(const fw_config_t *cfg, const char *name)
+{
+    if (!cfg || !name)
+        return 0;
+
+    /* Build the reference string "$NAME" */
+    char ref[FW_MAX_ALIAS_NAME + 1];
+    ref[0] = '$';
+    fw_strlcpy(ref + 1, name, sizeof(ref) - 1);
+
+    /* Scan all filter chains for rules referencing this alias */
+    for (int c = 0; c < FW_CHAIN_COUNT; c++) {
+        const fw_chain_t *ch = &cfg->chains[c];
+        for (int i = 0; i < ch->rule_count; i++) {
+            const fw_filter_rule_t *r = &ch->rules[i];
+            if (strcmp(r->src_addr, ref) == 0)
+                return 1;
+            if (strcmp(r->dst_addr, ref) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+int fw_alias_validate_name(const char *name)
+{
+    if (!name || !*name)
+        return 0;
+
+    size_t len = strlen(name);
+    if (len >= FW_MAX_ALIAS_NAME)
+        return 0;
+
+    /* Must start with a letter */
+    if (!isalpha((unsigned char)name[0]))
+        return 0;
+
+    /* Allow alphanumeric and underscore */
+    for (size_t i = 0; i < len; i++) {
+        char c = name[i];
+        if (!isalnum((unsigned char)c) && c != '_')
+            return 0;
+    }
+
+    return 1;
+}

@@ -1,6 +1,8 @@
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/validate.h"
+#include "firewallo/webhook.h"
+#include "firewallo/alias.h"
 #include "firewallo/util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,6 +171,55 @@ static void load_filter_rules(const json_value_t *arr, fw_filter_rule_t out[], i
 
         s = json_string_value(json_object_get(rule, "comment"));
         if (s) fw_strlcpy(r->comment, s, sizeof(r->comment));
+
+        /* Parse schedule if present */
+        json_value_t *sched = json_object_get(rule, "schedule");
+        if (sched && sched->type == JSON_OBJECT) {
+            json_value_t *en = json_object_get(sched, "enabled");
+            if (en) r->schedule.enabled = json_bool_value(en);
+
+            /* Parse start time "HH:MM" */
+            s = json_string_value(json_object_get(sched, "start"));
+            if (s) {
+                int hh = 0, mm = 0;
+                if (sscanf(s, "%d:%d", &hh, &mm) == 2) {
+                    r->schedule.hour_start = hh;
+                    r->schedule.minute_start = mm;
+                }
+            }
+
+            /* Parse end time "HH:MM" */
+            s = json_string_value(json_object_get(sched, "end"));
+            if (s) {
+                int hh = 0, mm = 0;
+                if (sscanf(s, "%d:%d", &hh, &mm) == 2) {
+                    r->schedule.hour_end = hh;
+                    r->schedule.minute_end = mm;
+                }
+            }
+
+            /* Parse days as comma-separated names */
+            s = json_string_value(json_object_get(sched, "days"));
+            if (s) {
+                r->schedule.days = 0;
+                const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+                /* Work on a copy to tokenize */
+                char days_buf[128];
+                fw_strlcpy(days_buf, s, sizeof(days_buf));
+                char *tok = strtok(days_buf, ",");
+                while (tok) {
+                    /* Trim leading spaces */
+                    while (*tok == ' ') tok++;
+                    for (int d = 0; d < 7; d++) {
+                        if (strncmp(tok, day_names[d], 3) == 0) {
+                            r->schedule.days |= (unsigned char)(1 << d);
+                            break;
+                        }
+                    }
+                    tok = strtok(NULL, ",");
+                }
+            }
+        }
 
         (*count)++;
     }
@@ -412,6 +463,23 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
                            cfg->chains[i].udp_ports, &cfg->chains[i].udp_port_count, FW_MAX_PORTS);
             load_filter_rules(json_object_get(chain, "rules"),
                               cfg->chains[i].rules, &cfg->chains[i].rule_count, FW_MAX_RULES);
+
+            /* Rate limit */
+            json_value_t *rl = json_object_get(chain, "rate_limit");
+            if (rl && rl->type == JSON_OBJECT) {
+                json_value_t *v;
+                v = json_object_get(rl, "enabled");
+                if (v) cfg->chains[i].rate_limit.enabled = json_bool_value(v);
+                v = json_object_get(rl, "max");
+                if (v && v->type == JSON_NUMBER)
+                    cfg->chains[i].rate_limit.max_connections = (int)json_number_value(v);
+                v = json_object_get(rl, "period");
+                if (v && v->type == JSON_NUMBER)
+                    cfg->chains[i].rate_limit.period_seconds = (int)json_number_value(v);
+                v = json_object_get(rl, "ban");
+                if (v && v->type == JSON_NUMBER)
+                    cfg->chains[i].rate_limit.ban_seconds = (int)json_number_value(v);
+            }
         }
     }
 
@@ -477,6 +545,93 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
         if (en) cfg->suricata_enabled = json_bool_value(en);
         load_string_array(json_object_get(suricata, "blocked_protocols"),
                           cfg->suricata_blocked, &cfg->suricata_blocked_count, FW_MAX_PROTOCOLS);
+    }
+
+    /* IPv6 transition mechanism filtering */
+    json_value_t *ipv6_transition = json_object_get(root, "ipv6_transition");
+    if (ipv6_transition && ipv6_transition->type == JSON_OBJECT) {
+        json_value_t *v;
+        v = json_object_get(ipv6_transition, "block_6to4");
+        if (v) cfg->block_6to4 = json_bool_value(v);
+        v = json_object_get(ipv6_transition, "block_teredo");
+        if (v) cfg->block_teredo = json_bool_value(v);
+        v = json_object_get(ipv6_transition, "block_isatap");
+        if (v) cfg->block_isatap = json_bool_value(v);
+    }
+
+    /* Webhooks */
+    json_value_t *webhooks = json_object_get(root, "webhooks");
+    if (webhooks && webhooks->type == JSON_ARRAY) {
+        cfg->webhook_count = 0;
+        int wn = json_array_count(webhooks);
+        for (int i = 0; i < wn && cfg->webhook_count < FW_MAX_WEBHOOKS; i++) {
+            json_value_t *wh = json_array_get(webhooks, i);
+            if (!wh || wh->type != JSON_OBJECT) continue;
+            fw_webhook_t *w = &cfg->webhooks[cfg->webhook_count];
+            memset(w, 0, sizeof(*w));
+
+            const char *ws;
+            ws = json_string_value(json_object_get(wh, "url"));
+            if (ws) fw_strlcpy(w->url, ws, sizeof(w->url));
+
+            ws = json_string_value(json_object_get(wh, "secret"));
+            if (ws) fw_strlcpy(w->secret, ws, sizeof(w->secret));
+
+            json_value_t *ev = json_object_get(wh, "events");
+            if (ev && ev->type == JSON_NUMBER)
+                w->events = (unsigned int)json_number_value(ev);
+            else
+                w->events = WH_EVENT_ALL;
+
+            json_value_t *en = json_object_get(wh, "enabled");
+            if (en)
+                w->enabled = json_bool_value(en);
+            else
+                w->enabled = 1;
+
+            json_value_t *rc = json_object_get(wh, "retry_count");
+            if (rc && rc->type == JSON_NUMBER)
+                w->retry_count = (int)json_number_value(rc);
+            else
+                w->retry_count = 3;
+
+            ws = json_string_value(json_object_get(wh, "comment"));
+            if (ws) fw_strlcpy(w->comment, ws, sizeof(w->comment));
+
+            cfg->webhook_count++;
+        }
+    }
+
+    /* Aliases */
+    json_value_t *aliases_arr = json_object_get(root, "aliases");
+    if (aliases_arr && aliases_arr->type == JSON_ARRAY) {
+        cfg->alias_count = 0;
+        int n = json_array_count(aliases_arr);
+        for (int i = 0; i < n && cfg->alias_count < FW_MAX_ALIASES; i++) {
+            json_value_t *alias = json_array_get(aliases_arr, i);
+            if (!alias || alias->type != JSON_OBJECT) continue;
+
+            fw_alias_t *a = &cfg->aliases[cfg->alias_count];
+            memset(a, 0, sizeof(*a));
+
+            const char *as;
+            as = json_string_value(json_object_get(alias, "name"));
+            if (as) fw_strlcpy(a->name, as, sizeof(a->name));
+
+            as = json_string_value(json_object_get(alias, "type"));
+            if (as && strcmp(as, "port") == 0)
+                a->type = ALIAS_TYPE_PORT;
+            else
+                a->type = ALIAS_TYPE_IP;
+
+            load_string_array(json_object_get(alias, "entries"),
+                              a->entries, &a->entry_count, FW_MAX_ALIAS_ENTRIES);
+
+            as = json_string_value(json_object_get(alias, "comment"));
+            if (as) fw_strlcpy(a->comment, as, sizeof(a->comment));
+
+            cfg->alias_count++;
+        }
     }
 
     json_free(root);
@@ -548,6 +703,29 @@ static json_value_t *build_filter_rules(const fw_filter_rule_t *rules, int count
         json_object_set(obj, "dst_port", build_port_field(r->dst_port));
         json_object_set(obj, "action", json_new_string(action_to_string(r->action)));
         json_object_set(obj, "comment", json_new_string(r->comment));
+
+        /* Serialize schedule if enabled */
+        if (r->schedule.enabled) {
+            json_value_t *sched = json_new_object();
+            json_object_set(sched, "enabled", json_new_bool(1));
+
+            char time_buf[8];
+            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
+                     r->schedule.hour_start, r->schedule.minute_start);
+            json_object_set(sched, "start", json_new_string(time_buf));
+
+            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
+                     r->schedule.hour_end, r->schedule.minute_end);
+            json_object_set(sched, "end", json_new_string(time_buf));
+
+            /* Build day names string */
+            static const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+            char days_str[64];
+            fw_schedule_days_str(r->schedule.days, days_str, sizeof(days_str), day_names, ",");
+            json_object_set(sched, "days", json_new_string(days_str));
+            json_object_set(obj, "schedule", sched);
+        }
+
         json_array_append(arr, obj);
     }
     return arr;
@@ -685,6 +863,15 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
                         build_int_array((int *)ch->udp_ports, ch->udp_port_count));
         json_object_set(chain, "rules",
                         build_filter_rules(ch->rules, ch->rule_count));
+
+        /* Rate limit */
+        json_value_t *rl = json_new_object();
+        json_object_set(rl, "enabled", json_new_bool(ch->rate_limit.enabled));
+        json_object_set(rl, "max", json_new_number(ch->rate_limit.max_connections));
+        json_object_set(rl, "period", json_new_number(ch->rate_limit.period_seconds));
+        json_object_set(rl, "ban", json_new_number(ch->rate_limit.ban_seconds));
+        json_object_set(chain, "rate_limit", rl);
+
         json_object_set(filter, json_chain_keys[i], chain);
     }
     json_object_set(root, "filter", filter);
@@ -734,6 +921,43 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
                     build_string_array((char(*)[FW_MAX_ADDR])cfg->suricata_blocked,
                                        cfg->suricata_blocked_count));
     json_object_set(root, "suricata", suricata);
+
+    /* IPv6 transition mechanism filtering */
+    json_value_t *ipv6_transition = json_new_object();
+    json_object_set(ipv6_transition, "block_6to4", json_new_bool(cfg->block_6to4));
+    json_object_set(ipv6_transition, "block_teredo", json_new_bool(cfg->block_teredo));
+    json_object_set(ipv6_transition, "block_isatap", json_new_bool(cfg->block_isatap));
+    json_object_set(root, "ipv6_transition", ipv6_transition);
+
+    /* Webhooks */
+    json_value_t *webhooks_arr = json_new_array();
+    for (int i = 0; i < cfg->webhook_count; i++) {
+        const fw_webhook_t *w = &cfg->webhooks[i];
+        json_value_t *wobj = json_new_object();
+        json_object_set(wobj, "url", json_new_string(w->url));
+        json_object_set(wobj, "secret", json_new_string(w->secret));
+        json_object_set(wobj, "events", json_new_number(w->events));
+        json_object_set(wobj, "enabled", json_new_bool(w->enabled));
+        json_object_set(wobj, "retry_count", json_new_number(w->retry_count));
+        json_object_set(wobj, "comment", json_new_string(w->comment));
+        json_array_append(webhooks_arr, wobj);
+    }
+    json_object_set(root, "webhooks", webhooks_arr);
+
+    /* Aliases */
+    json_value_t *aliases_arr = json_new_array();
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "name", json_new_string(a->name));
+        json_object_set(obj, "type",
+                        json_new_string(a->type == ALIAS_TYPE_PORT ? "port" : "ip"));
+        json_object_set(obj, "entries",
+                        build_string_array((char(*)[FW_MAX_ADDR])a->entries, a->entry_count));
+        json_object_set(obj, "comment", json_new_string(a->comment));
+        json_array_append(aliases_arr, obj);
+    }
+    json_object_set(root, "aliases", aliases_arr);
 
     return root;
 }
@@ -798,7 +1022,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate DNS servers */
+    /* Validate DNS servers (IPv4 only — backends generate IPv4-only DNS allow rules) */
     for (int i = 0; i < cfg->dns_count; i++) {
         if (!fw_validate_ipv4(cfg->dns[i])) {
             snprintf(err, errlen, "invalid DNS server: %s", cfg->dns[i]);
@@ -806,7 +1030,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate IP ranges */
+    /* Validate IP ranges (IPv4 CIDR only — used for NAT masquerading which is IPv4-only) */
     for (int i = 0; i < cfg->lan_range_count; i++) {
         if (!fw_validate_ipv4_cidr(cfg->lan_ranges[i])) {
             snprintf(err, errlen, "invalid LAN range: %s", cfg->lan_ranges[i]);
@@ -820,7 +1044,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate NAT postrouting rules */
+    /* Validate NAT postrouting rules (IPv4 only — backends generate IPv4-only rules) */
     for (int i = 0; i < cfg->nat_post_count; i++) {
         const fw_nat_post_t *r = &cfg->nat_post[i];
         if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
@@ -845,7 +1069,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate NAT prerouting rules */
+    /* Validate NAT prerouting rules (IPv4 only — DNAT rules are IPv4-only) */
     for (int i = 0; i < cfg->nat_pre_count; i++) {
         const fw_nat_pre_t *r = &cfg->nat_pre[i];
         if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
@@ -874,7 +1098,89 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate ports and filter rules in all chains */
+    /* Validate webhooks */
+    for (int i = 0; i < cfg->webhook_count; i++) {
+        const fw_webhook_t *w = &cfg->webhooks[i];
+        if (!fw_webhook_validate_url(w->url)) {
+            snprintf(err, errlen, "invalid webhook URL at index %d: %s", i, w->url);
+            return -1;
+        }
+        if (!fw_webhook_validate_events(w->events)) {
+            snprintf(err, errlen, "invalid webhook events mask at index %d: %u", i, w->events);
+            return -1;
+        }
+        if (!fw_webhook_validate_secret(w->secret)) {
+            snprintf(err, errlen, "webhook secret at index %d contains control characters", i);
+            return -1;
+        }
+        if (w->retry_count < 0 || w->retry_count > FW_MAX_WEBHOOK_RETRY) {
+            snprintf(err, errlen, "invalid webhook retry_count at index %d: %d", i, w->retry_count);
+            return -1;
+        }
+    }
+
+    /* Validate aliases */
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        if (!fw_alias_validate_name(a->name)) {
+            snprintf(err, errlen, "invalid alias name: %s", a->name);
+            return -1;
+        }
+        /* Check for duplicates */
+        for (int j = 0; j < i; j++) {
+            if (strcmp(cfg->aliases[j].name, a->name) == 0) {
+                snprintf(err, errlen, "duplicate alias name: %s", a->name);
+                return -1;
+            }
+        }
+        if (a->entry_count == 0) {
+            snprintf(err, errlen, "alias '%s' has no entries", a->name);
+            return -1;
+        }
+        /* Validate entries match type */
+        for (int e = 0; e < a->entry_count; e++) {
+            if (a->type == ALIAS_TYPE_IP) {
+                if (!fw_validate_ipv4(a->entries[e]) &&
+                    !fw_validate_ipv4_cidr(a->entries[e])) {
+                    snprintf(err, errlen, "invalid IP entry '%s' in alias '%s'",
+                             a->entries[e], a->name);
+                    return -1;
+                }
+            } else {
+                if (!fw_validate_port_single(a->entries[e])) {
+                    snprintf(err, errlen, "invalid port entry '%s' in alias '%s' (single numeric port required)",
+                             a->entries[e], a->name);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    /* Validate $-references in filter rules resolve */
+    for (int c = 0; c < FW_CHAIN_COUNT; c++) {
+        const fw_chain_t *ch = &cfg->chains[c];
+        for (int i = 0; i < ch->rule_count; i++) {
+            const fw_filter_rule_t *r = &ch->rules[i];
+            if (fw_alias_is_ref(r->src_addr)) {
+                const fw_alias_t *a = fw_alias_find(cfg, r->src_addr + 1);
+                if (!a || a->type != ALIAS_TYPE_IP) {
+                    snprintf(err, errlen, "unresolved alias reference '%s' in chain %s rule %d",
+                             r->src_addr, ch->name, i);
+                    return -1;
+                }
+            }
+            if (fw_alias_is_ref(r->dst_addr)) {
+                const fw_alias_t *a = fw_alias_find(cfg, r->dst_addr + 1);
+                if (!a || a->type != ALIAS_TYPE_IP) {
+                    snprintf(err, errlen, "unresolved alias reference '%s' in chain %s rule %d",
+                             r->dst_addr, ch->name, i);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    /* Validate ports, filter rules, and rate limits in all chains */
     for (int c = 0; c < FW_CHAIN_COUNT; c++) {
         const fw_chain_t *ch = &cfg->chains[c];
         for (int i = 0; i < ch->tcp_port_count; i++) {
@@ -891,7 +1197,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
                 return -1;
             }
         }
-        /* Validate explicit filter rules (addresses, comments) */
+        /* Validate explicit filter rules (addresses, comments, schedules) */
         for (int i = 0; i < ch->rule_count; i++) {
             const fw_filter_rule_t *r = &ch->rules[i];
             if (!fw_validate_addr_field(r->src_addr)) {
@@ -907,6 +1213,31 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             if (!fw_validate_comment(r->comment)) {
                 snprintf(err, errlen, "invalid comment in chain %s rule %d",
                          ch->name, i);
+                return -1;
+            }
+            if (r->schedule.enabled &&
+                !fw_validate_schedule(&r->schedule)) {
+                snprintf(err, errlen, "invalid schedule on rule %d in chain %s",
+                         i, ch->name);
+                return -1;
+            }
+        }
+
+        /* Validate rate limit if enabled */
+        if (ch->rate_limit.enabled) {
+            if (ch->rate_limit.max_connections <= 0) {
+                snprintf(err, errlen,
+                         "rate_limit.max must be positive in chain %s", ch->name);
+                return -1;
+            }
+            if (ch->rate_limit.period_seconds <= 0) {
+                snprintf(err, errlen,
+                         "rate_limit.period must be positive in chain %s", ch->name);
+                return -1;
+            }
+            if (ch->rate_limit.ban_seconds <= 0) {
+                snprintf(err, errlen,
+                         "rate_limit.ban must be positive in chain %s", ch->name);
                 return -1;
             }
         }

@@ -1,9 +1,11 @@
 #include "commands.h"
 #include "firewallo/config.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/rollback.h"
 #include "firewallo/log.h"
 #include "firewallo/i18n.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -27,6 +29,7 @@ static void print_usage(void)
         "  export          Export configuration backup\n"
         "  restore <file>  Restore configuration from backup\n"
         "  switch <nft|ipt> Switch backend between nftables and iptables\n"
+        "  confirm         Confirm pending config (cancel rollback timer)\n"
         "  version         Show version\n"
         "\n"
         "Config editing:\n"
@@ -36,11 +39,23 @@ static void print_usage(void)
         "  set-sysctl <key> <0|1>\n"
         "  set-chain <chain> <tcp|udp> <add|remove> <port>\n"
         "  set-nat <post|pre> <add|remove> <rule-json>\n"
+        "  set-ratelimit <chain> <max> <period> <ban>\n"
+        "\n"
+        "System info:\n"
+        "  interfaces      List system network interfaces with status\n"
+        "\n"
+        "VPN management:\n"
+        "  vpn-list             List all VPN tunnels with status\n"
+        "  vpn-status <name>    Show detailed tunnel status\n"
+        "  vpn-start <name>     Start a VPN tunnel\n"
+        "  vpn-stop <name>      Stop a VPN tunnel\n"
+        "  vpn-peers <tunnel>   List peers for a tunnel\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>  Config file (default: /etc/firewallo/firewallo.json)\n"
         "  -v, --verbose        Verbose output (show all commands)\n"
         "  -n, --dry-run        Show commands without executing\n"
+        "  -t, --rollback-timeout <N>  Auto-rollback after N seconds (opt-in, disabled by default)\n"
         "  -h, --help           Show this help\n"
     );
 }
@@ -50,17 +65,19 @@ int main(int argc, char *argv[])
     const char *config_path = FW_DEFAULT_CONFIG_PATH;
     int verbose = 0;
     int dry_run = 0;
+    int rollback_timeout = 0; /* 0 means no rollback timer */
 
     static struct option long_opts[] = {
-        {"config",  required_argument, NULL, 'c'},
-        {"verbose", no_argument,       NULL, 'v'},
-        {"dry-run", no_argument,       NULL, 'n'},
-        {"help",    no_argument,       NULL, 'h'},
+        {"config",           required_argument, NULL, 'c'},
+        {"verbose",          no_argument,       NULL, 'v'},
+        {"dry-run",          no_argument,       NULL, 'n'},
+        {"rollback-timeout", required_argument, NULL, 't'},
+        {"help",             no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:vnh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:vnt:h", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'c':
             config_path = optarg;
@@ -71,6 +88,13 @@ int main(int argc, char *argv[])
         case 'n':
             dry_run = 1;
             verbose = 1;
+            break;
+        case 't':
+            rollback_timeout = atoi(optarg);
+            if (rollback_timeout <= 0) {
+                fprintf(stderr, "Rollback timeout must be a positive integer\n");
+                return 1;
+            }
             break;
         case 'h':
             print_usage();
@@ -87,6 +111,10 @@ int main(int argc, char *argv[])
     }
 
     const char *command = argv[optind];
+
+    /* Commands that don't require config */
+    if (strcmp(command, "interfaces") == 0)
+        return cmd_list_system_interfaces();
 
     /* Load configuration */
     fw_config_t cfg;
@@ -131,9 +159,12 @@ int main(int argc, char *argv[])
 
     /* Dispatch command */
     int ret = 0;
-    if (strcmp(command, "start") == 0)
-        ret = cmd_start(&cfg, verbose);
-    else if (strcmp(command, "stop") == 0)
+    if (strcmp(command, "start") == 0) {
+        if (rollback_timeout > 0)
+            ret = cmd_start_with_rollback(&cfg, config_path, verbose, rollback_timeout);
+        else
+            ret = cmd_start(&cfg, verbose);
+    } else if (strcmp(command, "stop") == 0)
         ret = cmd_stop(&cfg, verbose);
     else if (strcmp(command, "restart") == 0)
         ret = cmd_restart(&cfg, config_path, verbose);
@@ -163,8 +194,13 @@ int main(int argc, char *argv[])
             return 1;
         }
         ret = cmd_switch_backend(&cfg, argv[optind + 1], config_path);
-    } else if (strcmp(command, "reload") == 0)
-        ret = cmd_reload(&cfg, config_path, verbose);
+    } else if (strcmp(command, "reload") == 0) {
+        if (rollback_timeout > 0)
+            ret = cmd_reload_with_rollback(&cfg, config_path, verbose, rollback_timeout);
+        else
+            ret = cmd_reload(&cfg, config_path, verbose);
+    } else if (strcmp(command, "confirm") == 0)
+        ret = cmd_confirm();
     else if (strcmp(command, "set-interface") == 0) {
         if (optind + 3 >= argc) {
             fprintf(stderr, "Usage: firewallo set-interface <zone> <add|remove> <iface>\n");
@@ -205,9 +241,42 @@ int main(int argc, char *argv[])
         }
         ret = cmd_set_nat(&cfg, argv[optind + 1], argv[optind + 2],
                           argv[optind + 3], config_path);
+    } else if (strcmp(command, "set-ratelimit") == 0) {
+        if (optind + 4 >= argc) {
+            fprintf(stderr, "Usage: firewallo set-ratelimit <chain> <max> <period> <ban>\n");
+            return 1;
+        }
+        ret = cmd_set_ratelimit(&cfg, argv[optind + 1], argv[optind + 2],
+                                argv[optind + 3], argv[optind + 4], config_path);
     } else if (strcmp(command, "version") == 0)
         ret = cmd_version(&cfg);
-    else {
+    else if (strcmp(command, "vpn-list") == 0)
+        ret = cmd_vpn_list(&cfg);
+    else if (strcmp(command, "vpn-status") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-status <name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_status(&cfg, argv[optind + 1]);
+    } else if (strcmp(command, "vpn-start") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-start <name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_start(&cfg, argv[optind + 1]);
+    } else if (strcmp(command, "vpn-stop") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-stop <name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_stop(&cfg, argv[optind + 1]);
+    } else if (strcmp(command, "vpn-peers") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-peers <tunnel-name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_peers(&cfg, argv[optind + 1]);
+    } else {
         fprintf(stderr, "Unknown command: %s\n\n", command);
         print_usage();
         ret = 1;

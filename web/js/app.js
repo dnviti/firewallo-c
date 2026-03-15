@@ -10,6 +10,7 @@ var routes = {
     dashboard: { render: renderDashboard, title: 'Dashboard' },
     filter: { render: renderFilter, title: 'Filter Rules' },
     nat: { render: renderNat, title: 'NAT' },
+    vpn: { render: renderVpn, title: 'VPN' },
     config: { render: renderConfig, title: 'Configuration' },
     logs: { render: renderLogs, title: 'Rules' }
 };
