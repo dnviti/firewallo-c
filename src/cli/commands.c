@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <signal.h>
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
@@ -954,12 +956,50 @@ int cmd_reload(fw_config_t *cfg, const char *config_path, int verbose)
 
 int cmd_confirm(void)
 {
+    /* Uses state file for cross-process communication (comment 3).
+       fw_rollback_confirm() checks both in-process state and the
+       state file written by the process that started the rollback. */
     if (fw_rollback_confirm() != 0) {
         fprintf(stderr, "No pending rollback to confirm\n");
         return 1;
     }
     printf("Configuration confirmed, rollback timer cancelled\n");
     return 0;
+}
+
+/* ── Wait for confirm or timeout (comment 10) ─────────────────────── */
+
+/* Helper: wait in a loop for confirmation (via state file removal)
+   or SIGALRM timeout. The CLI must stay running for the alarm to fire. */
+static int wait_for_confirm_or_timeout(int rollback_timeout)
+{
+    printf("Run 'firewallo confirm' within %d seconds to keep this configuration\n",
+           rollback_timeout);
+    printf("Waiting for confirmation...\n");
+
+    /* Poll loop: check if state file was removed (confirm from another process)
+       or if SIGALRM fired (timeout). sleep(1) is interrupted by SIGALRM. */
+    while (1) {
+        /* Check if SIGALRM fired */
+        if (fw_rollback_check()) {
+            printf("Timeout reached, configuration rolled back automatically\n");
+            return 1;
+        }
+
+        /* Check if state file was removed by 'firewallo confirm' */
+        fw_rollback_state_t state;
+        if (fw_rollback_state_load(&state) != 0 || !state.pending) {
+            /* State file gone or no longer pending: confirmed by another process */
+            alarm(0); /* cancel our alarm */
+            printf("Configuration confirmed (by another process)\n");
+
+            /* Clean up in-process state */
+            fw_rollback_cancel();
+            return 0;
+        }
+
+        sleep(1);
+    }
 }
 
 /* ── Start with rollback ──────────────────────────────────────────── */
@@ -981,14 +1021,14 @@ int cmd_start_with_rollback(fw_config_t *cfg, const char *config_path,
     /* Apply rules */
     int ret = cmd_start(cfg, verbose);
     if (ret != 0) {
-        /* Apply failed, cancel the timer and rollback immediately */
-        fw_rollback_cancel();
+        /* Apply failed: perform immediate rollback using saved backup (comment 7) */
+        fprintf(stderr, "Apply failed, performing immediate rollback...\n");
+        fw_rollback_perform();
         return ret;
     }
 
-    printf("Run 'firewallo confirm' within %d seconds to keep this configuration\n",
-           rollback_timeout);
-    return 0;
+    /* Keep CLI running until confirm or timeout (comment 10) */
+    return wait_for_confirm_or_timeout(rollback_timeout);
 }
 
 /* ── Reload with rollback ─────────────────────────────────────────── */
@@ -1010,13 +1050,14 @@ int cmd_reload_with_rollback(fw_config_t *cfg, const char *config_path,
     /* Reload rules */
     int ret = cmd_reload(cfg, config_path, verbose);
     if (ret != 0) {
-        fw_rollback_cancel();
+        /* Reload failed: perform immediate rollback using saved backup (comment 7) */
+        fprintf(stderr, "Reload failed, performing immediate rollback...\n");
+        fw_rollback_perform();
         return ret;
     }
 
-    printf("Run 'firewallo confirm' within %d seconds to keep this configuration\n",
-           rollback_timeout);
-    return 0;
+    /* Keep CLI running until confirm or timeout (comment 10) */
+    return wait_for_confirm_or_timeout(rollback_timeout);
 }
 
 /* ── Version ───────────────────────────────────────────────────────── */

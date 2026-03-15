@@ -45,7 +45,7 @@ static void print_usage(void)
         "  -c, --config <path>  Config file (default: /etc/firewallo/firewallo.json)\n"
         "  -v, --verbose        Verbose output (show all commands)\n"
         "  -n, --dry-run        Show commands without executing\n"
-        "  -t, --rollback-timeout <N>  Auto-rollback after N seconds (default: 60)\n"
+        "  -t, --rollback-timeout <N>  Auto-rollback after N seconds (opt-in, disabled by default)\n"
         "  -h, --help           Show this help\n"
     );
 }
