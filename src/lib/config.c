@@ -852,7 +852,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate ports in all chains */
+    /* Validate ports and filter rules in all chains */
     for (int c = 0; c < FW_CHAIN_COUNT; c++) {
         const fw_chain_t *ch = &cfg->chains[c];
         for (int i = 0; i < ch->tcp_port_count; i++) {
@@ -868,6 +868,127 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
                          ch->udp_ports[i], ch->name);
                 return -1;
             }
+        }
+        /* Validate explicit filter rules (addresses, comments) */
+        for (int i = 0; i < ch->rule_count; i++) {
+            const fw_filter_rule_t *r = &ch->rules[i];
+            if (!fw_validate_addr_field(r->src_addr)) {
+                snprintf(err, errlen, "invalid src_addr in chain %s rule %d: %s",
+                         ch->name, i, r->src_addr);
+                return -1;
+            }
+            if (!fw_validate_addr_field(r->dst_addr)) {
+                snprintf(err, errlen, "invalid dst_addr in chain %s rule %d: %s",
+                         ch->name, i, r->dst_addr);
+                return -1;
+            }
+            if (!fw_validate_comment(r->comment)) {
+                snprintf(err, errlen, "invalid comment in chain %s rule %d",
+                         ch->name, i);
+                return -1;
+            }
+        }
+    }
+
+    /* Validate NAT postrouting comments */
+    for (int i = 0; i < cfg->nat_post_count; i++) {
+        if (!fw_validate_comment(cfg->nat_post[i].comment)) {
+            snprintf(err, errlen, "invalid comment in NAT postrouting rule %d", i);
+            return -1;
+        }
+    }
+
+    /* Validate NAT prerouting comments */
+    for (int i = 0; i < cfg->nat_pre_count; i++) {
+        if (!fw_validate_comment(cfg->nat_pre[i].comment)) {
+            snprintf(err, errlen, "invalid comment in NAT prerouting rule %d", i);
+            return -1;
+        }
+    }
+
+    /* Validate mangle rules */
+    for (int i = 0; i < cfg->mangle_pre_count; i++) {
+        const fw_mangle_rule_t *r = &cfg->mangle_pre[i];
+        if (r->iif[0] && !fw_validate_interface(r->iif)) {
+            snprintf(err, errlen, "invalid iif in mangle prerouting rule %d: %s", i, r->iif);
+            return -1;
+        }
+        if (!fw_validate_addr_field(r->src_addr)) {
+            snprintf(err, errlen, "invalid src_addr in mangle prerouting rule %d: %s", i, r->src_addr);
+            return -1;
+        }
+        if (!fw_validate_addr_field(r->dst_addr)) {
+            snprintf(err, errlen, "invalid dst_addr in mangle prerouting rule %d: %s", i, r->dst_addr);
+            return -1;
+        }
+        if (r->mark[0] && !fw_validate_mark(r->mark)) {
+            snprintf(err, errlen, "invalid mark in mangle prerouting rule %d: %s", i, r->mark);
+            return -1;
+        }
+        if (!fw_validate_comment(r->comment)) {
+            snprintf(err, errlen, "invalid comment in mangle prerouting rule %d", i);
+            return -1;
+        }
+    }
+    for (int i = 0; i < cfg->mangle_post_count; i++) {
+        const fw_mangle_rule_t *r = &cfg->mangle_post[i];
+        if (r->iif[0] && !fw_validate_interface(r->iif)) {
+            snprintf(err, errlen, "invalid iif in mangle postrouting rule %d: %s", i, r->iif);
+            return -1;
+        }
+        if (!fw_validate_addr_field(r->src_addr)) {
+            snprintf(err, errlen, "invalid src_addr in mangle postrouting rule %d: %s", i, r->src_addr);
+            return -1;
+        }
+        if (!fw_validate_addr_field(r->dst_addr)) {
+            snprintf(err, errlen, "invalid dst_addr in mangle postrouting rule %d: %s", i, r->dst_addr);
+            return -1;
+        }
+        if (r->mark[0] && !fw_validate_mark(r->mark)) {
+            snprintf(err, errlen, "invalid mark in mangle postrouting rule %d: %s", i, r->mark);
+            return -1;
+        }
+        if (!fw_validate_comment(r->comment)) {
+            snprintf(err, errlen, "invalid comment in mangle postrouting rule %d", i);
+            return -1;
+        }
+    }
+
+    /* Validate routes */
+    for (int i = 0; i < cfg->route_count; i++) {
+        const fw_route_t *r = &cfg->routes[i];
+        if (r->destination[0] && !fw_validate_ipv4_cidr(r->destination) && !fw_validate_ipv4(r->destination)) {
+            snprintf(err, errlen, "invalid destination in route %d: %s", i, r->destination);
+            return -1;
+        }
+        if (r->gateway[0] && !fw_validate_ipv4(r->gateway)) {
+            snprintf(err, errlen, "invalid gateway in route %d: %s", i, r->gateway);
+            return -1;
+        }
+        if (r->interface[0] && !fw_validate_interface(r->interface)) {
+            snprintf(err, errlen, "invalid interface in route %d: %s", i, r->interface);
+            return -1;
+        }
+        if (!fw_validate_comment(r->comment)) {
+            snprintf(err, errlen, "invalid comment in route %d", i);
+            return -1;
+        }
+    }
+
+    /* Validate DPI rules */
+    for (int i = 0; i < cfg->dpi_rule_count; i++) {
+        const fw_dpi_rule_t *r = &cfg->dpi_rules[i];
+        if (!fw_validate_addr_field(r->src_addr)) {
+            snprintf(err, errlen, "invalid src_addr in DPI rule %d: %s", i, r->src_addr);
+            return -1;
+        }
+        if (!fw_validate_addr_field(r->dst_addr)) {
+            snprintf(err, errlen, "invalid dst_addr in DPI rule %d: %s", i, r->dst_addr);
+            return -1;
+        }
+        if (!fw_validate_comment(r->comment)) {
+            snprintf(err, errlen, "invalid comment in DPI rule %d", i);
+            return -1;
         }
     }
 
