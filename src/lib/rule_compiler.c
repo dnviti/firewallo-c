@@ -173,11 +173,18 @@ int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
     /* 12. ICMP rules */
     ops->add_icmp_rules(out);
 
+    /* 12b. ICMPv6 essential traffic rules */
+    ops->add_icmpv6_rules(out);
+
+    /* 12c. IPv6 transition mechanism filtering */
+    ops->add_transition_filter(out, cfg->block_6to4, cfg->block_teredo,
+                               cfg->block_isatap);
+
     /* 13. FORWARD chain: builtin jumps + localhost accept */
     ops->add_builtin_jumps(out, "FORWARD");
     /* FORWARD localhost accept (nft adds this, iptables uses -i lo) */
     fw_cmdlist_append(out, cfg->backend == BACKEND_NFT
-        ? "/usr/sbin/nft \"add rule ip filter FORWARD iifname \\\"lo\\\" "
+        ? "/usr/sbin/nft \"add rule inet filter FORWARD iifname \\\"lo\\\" "
           "log prefix \\\"ACCEPTED FORWARD localhost : \\\" counter accept\""
         : "/sbin/iptables -A FORWARD -i lo -j ACCEPT");
 
@@ -199,7 +206,7 @@ int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
     ops->add_builtin_jumps(out, "INPUT");
     /* INPUT localhost */
     fw_cmdlist_append(out, cfg->backend == BACKEND_NFT
-        ? "/usr/sbin/nft \"add rule ip filter INPUT iifname \\\"lo\\\" "
+        ? "/usr/sbin/nft \"add rule inet filter INPUT iifname \\\"lo\\\" "
           "log prefix \\\"ACCEPT INPUT localhost : \\\" counter accept\""
         : "/sbin/iptables -A INPUT -i lo -j ACCEPT");
 
@@ -213,7 +220,7 @@ int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
     /* 16. OUTPUT chain: builtin jumps + per-zone jumps */
     ops->add_builtin_jumps(out, "OUTPUT");
     fw_cmdlist_append(out, cfg->backend == BACKEND_NFT
-        ? "/usr/sbin/nft \"add rule ip filter OUTPUT oifname \\\"lo\\\" "
+        ? "/usr/sbin/nft \"add rule inet filter OUTPUT oifname \\\"lo\\\" "
           "log prefix \\\"ACCEPTED OUTPUT localhost : \\\" counter accept\""
         : "/sbin/iptables -A OUTPUT -o lo -j ACCEPT");
 

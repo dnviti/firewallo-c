@@ -479,6 +479,18 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
                           cfg->suricata_blocked, &cfg->suricata_blocked_count, FW_MAX_PROTOCOLS);
     }
 
+    /* IPv6 transition mechanism filtering */
+    json_value_t *ipv6_transition = json_object_get(root, "ipv6_transition");
+    if (ipv6_transition && ipv6_transition->type == JSON_OBJECT) {
+        json_value_t *v;
+        v = json_object_get(ipv6_transition, "block_6to4");
+        if (v) cfg->block_6to4 = json_bool_value(v);
+        v = json_object_get(ipv6_transition, "block_teredo");
+        if (v) cfg->block_teredo = json_bool_value(v);
+        v = json_object_get(ipv6_transition, "block_isatap");
+        if (v) cfg->block_isatap = json_bool_value(v);
+    }
+
     json_free(root);
     return 0;
 }
@@ -735,6 +747,13 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
                                        cfg->suricata_blocked_count));
     json_object_set(root, "suricata", suricata);
 
+    /* IPv6 transition mechanism filtering */
+    json_value_t *ipv6_transition = json_new_object();
+    json_object_set(ipv6_transition, "block_6to4", json_new_bool(cfg->block_6to4));
+    json_object_set(ipv6_transition, "block_teredo", json_new_bool(cfg->block_teredo));
+    json_object_set(ipv6_transition, "block_isatap", json_new_bool(cfg->block_isatap));
+    json_object_set(root, "ipv6_transition", ipv6_transition);
+
     return root;
 }
 
@@ -798,23 +817,23 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate DNS servers */
+    /* Validate DNS servers (accept IPv4 or IPv6) */
     for (int i = 0; i < cfg->dns_count; i++) {
-        if (!fw_validate_ipv4(cfg->dns[i])) {
+        if (!fw_validate_ip(cfg->dns[i])) {
             snprintf(err, errlen, "invalid DNS server: %s", cfg->dns[i]);
             return -1;
         }
     }
 
-    /* Validate IP ranges */
+    /* Validate IP ranges (accept IPv4 or IPv6 CIDR) */
     for (int i = 0; i < cfg->lan_range_count; i++) {
-        if (!fw_validate_ipv4_cidr(cfg->lan_ranges[i])) {
+        if (!fw_validate_ip_cidr(cfg->lan_ranges[i])) {
             snprintf(err, errlen, "invalid LAN range: %s", cfg->lan_ranges[i]);
             return -1;
         }
     }
     for (int i = 0; i < cfg->dmz_range_count; i++) {
-        if (!fw_validate_ipv4_cidr(cfg->dmz_ranges[i])) {
+        if (!fw_validate_ip_cidr(cfg->dmz_ranges[i])) {
             snprintf(err, errlen, "invalid DMZ range: %s", cfg->dmz_ranges[i]);
             return -1;
         }
@@ -823,7 +842,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
     /* Validate NAT postrouting rules */
     for (int i = 0; i < cfg->nat_post_count; i++) {
         const fw_nat_post_t *r = &cfg->nat_post[i];
-        if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
+        if (r->src[0] && !fw_validate_ip_cidr(r->src) && !fw_validate_ip(r->src)) {
             snprintf(err, errlen, "invalid src in NAT postrouting rule %d: %s", i, r->src);
             return -1;
         }
@@ -835,7 +854,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "NAT postrouting rule %d: snat requires to_source", i);
             return -1;
         }
-        if (r->to_source[0] && !fw_validate_ipv4(r->to_source)) {
+        if (r->to_source[0] && !fw_validate_ip(r->to_source)) {
             snprintf(err, errlen, "invalid to_source in NAT postrouting rule %d: %s", i, r->to_source);
             return -1;
         }
@@ -848,7 +867,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
     /* Validate NAT prerouting rules */
     for (int i = 0; i < cfg->nat_pre_count; i++) {
         const fw_nat_pre_t *r = &cfg->nat_pre[i];
-        if (r->src[0] && !fw_validate_ipv4_cidr(r->src) && !fw_validate_ipv4(r->src)) {
+        if (r->src[0] && !fw_validate_ip_cidr(r->src) && !fw_validate_ip(r->src)) {
             snprintf(err, errlen, "invalid src in NAT prerouting rule %d: %s", i, r->src);
             return -1;
         }
@@ -860,7 +879,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             snprintf(err, errlen, "invalid dport in NAT prerouting rule %d: %d", i, r->dport);
             return -1;
         }
-        if (!fw_validate_ipv4(r->to_dest_ip)) {
+        if (!fw_validate_ip(r->to_dest_ip)) {
             snprintf(err, errlen, "invalid to_dest_ip in NAT prerouting rule %d: %s", i, r->to_dest_ip);
             return -1;
         }

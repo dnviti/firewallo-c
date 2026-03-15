@@ -4,6 +4,7 @@
 #include <string.h>
 
 #define IPT "/sbin/iptables"
+#define IP6T "/sbin/ip6tables"
 
 /* ── Flush / Table / Chain ─────────────────────────────────────────── */
 
@@ -17,6 +18,11 @@ static void ipt_flush_ruleset(fw_cmdlist_t *out)
     fw_cmdlist_append(out, "%s -t filter -X", IPT);
     fw_cmdlist_append(out, "%s -t mangle -F", IPT);
     fw_cmdlist_append(out, "%s -t mangle -X", IPT);
+    /* IPv6 */
+    fw_cmdlist_append(out, "%s -F", IP6T);
+    fw_cmdlist_append(out, "%s -X", IP6T);
+    fw_cmdlist_append(out, "%s -t filter -F", IP6T);
+    fw_cmdlist_append(out, "%s -t filter -X", IP6T);
 }
 
 static void ipt_create_filter_table(fw_cmdlist_t *out)
@@ -152,6 +158,57 @@ static void ipt_add_icmp_rules(fw_cmdlist_t *out)
 
     fw_cmdlist_append(out, "%s -A icmp_good -p icmp --icmp-type echo-request -j ACCEPT", IPT);
     fw_cmdlist_append(out, "%s -A icmp_good -p icmp --icmp-type echo-reply -j ACCEPT", IPT);
+}
+
+/* ── ICMPv6 ────────────────────────────────────────────────────────── */
+
+static void ipt_add_icmpv6_rules(fw_cmdlist_t *out)
+{
+    /* Neighbor Solicitation */
+    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type neighbour-solicitation -j ACCEPT", IP6T);
+    /* Neighbor Advertisement */
+    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type neighbour-advertisement -j ACCEPT", IP6T);
+    /* Router Solicitation */
+    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type router-solicitation -j ACCEPT", IP6T);
+    /* Router Advertisement */
+    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type router-advertisement -j ACCEPT", IP6T);
+    /* Echo request/reply */
+    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type echo-request -j ACCEPT", IP6T);
+    fw_cmdlist_append(out, "%s -A icmp_good -p icmpv6 --icmpv6-type echo-reply -j ACCEPT", IP6T);
+}
+
+/* ── IPv6 transition mechanism filtering ───────────────────────────── */
+
+static void ipt_add_transition_filter(fw_cmdlist_t *out, int block_6to4,
+                                       int block_teredo, int block_isatap)
+{
+    /* 6to4: protocol 41 */
+    if (block_6to4) {
+        fw_cmdlist_append(out, "%s -A FORWARD -p 41 -j LOG --log-prefix \"DROP 6to4 tunnel :\"", IPT);
+        fw_cmdlist_append(out, "%s -A FORWARD -p 41 -j DROP", IPT);
+        fw_cmdlist_append(out, "%s -A INPUT -p 41 -j LOG --log-prefix \"DROP 6to4 tunnel :\"", IPT);
+        fw_cmdlist_append(out, "%s -A INPUT -p 41 -j DROP", IPT);
+        fw_cmdlist_append(out, "%s -A FORWARD -d 2002::/16 -j LOG --log-prefix \"DROP 6to4 prefix :\"", IP6T);
+        fw_cmdlist_append(out, "%s -A FORWARD -d 2002::/16 -j DROP", IP6T);
+    }
+
+    /* Teredo: UDP port 3544 */
+    if (block_teredo) {
+        fw_cmdlist_append(out, "%s -A FORWARD -p udp --dport 3544 -j LOG --log-prefix \"DROP Teredo :\"", IPT);
+        fw_cmdlist_append(out, "%s -A FORWARD -p udp --dport 3544 -j DROP", IPT);
+        fw_cmdlist_append(out, "%s -A INPUT -p udp --dport 3544 -j LOG --log-prefix \"DROP Teredo :\"", IPT);
+        fw_cmdlist_append(out, "%s -A INPUT -p udp --dport 3544 -j DROP", IPT);
+        fw_cmdlist_append(out, "%s -A FORWARD -d 2001::/32 -j LOG --log-prefix \"DROP Teredo prefix :\"", IP6T);
+        fw_cmdlist_append(out, "%s -A FORWARD -d 2001::/32 -j DROP", IP6T);
+    }
+
+    /* ISATAP: protocol 41 with specific IPv6 addresses */
+    if (block_isatap) {
+        fw_cmdlist_append(out, "%s -A FORWARD -d ::5efe:0:0/96 -j LOG --log-prefix \"DROP ISATAP :\"", IP6T);
+        fw_cmdlist_append(out, "%s -A FORWARD -d ::5efe:0:0/96 -j DROP", IP6T);
+        fw_cmdlist_append(out, "%s -A INPUT -d ::5efe:0:0/96 -j LOG --log-prefix \"DROP ISATAP :\"", IP6T);
+        fw_cmdlist_append(out, "%s -A INPUT -d ::5efe:0:0/96 -j DROP", IP6T);
+    }
 }
 
 /* ── DPI queue ─────────────────────────────────────────────────────── */
@@ -358,6 +415,8 @@ const fw_backend_ops_t fw_backend_ipt = {
     .add_dns_server       = ipt_add_dns_server,
     .add_dns_rootserver   = ipt_add_dns_rootserver,
     .add_icmp_rules       = ipt_add_icmp_rules,
+    .add_icmpv6_rules     = ipt_add_icmpv6_rules,
+    .add_transition_filter = ipt_add_transition_filter,
     .add_dpi_queue        = ipt_add_dpi_queue,
     .add_builtin_jumps    = ipt_add_builtin_jumps,
     .add_forward_jump     = ipt_add_forward_jump,
