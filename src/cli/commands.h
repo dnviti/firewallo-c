@@ -35,4 +35,11 @@ int cmd_set_ratelimit(fw_config_t *cfg, const char *chain, const char *max_str,
                       const char *period_str, const char *ban_str,
                       const char *config_path);
 
+/* Rollback commands (FW-0001) */
+int cmd_confirm(void);
+int cmd_start_with_rollback(fw_config_t *cfg, const char *config_path,
+                            int verbose, int rollback_timeout);
+int cmd_reload_with_rollback(fw_config_t *cfg, const char *config_path,
+                             int verbose, int rollback_timeout);
+
 #endif /* FIREWALLO_CLI_COMMANDS_H */

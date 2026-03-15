@@ -2,6 +2,7 @@
 #include "firewallo/config.h"
 #include "firewallo/rule_compiler.h"
 #include "firewallo/sysctl.h"
+#include "firewallo/rollback.h"
 #include "firewallo/log.h"
 #include "firewallo/i18n.h"
 #include "firewallo/json.h"
@@ -947,6 +948,75 @@ int cmd_reload(fw_config_t *cfg, const char *config_path, int verbose)
     }
 
     return cmd_start(cfg, verbose);
+}
+
+/* ── Confirm (rollback) ────────────────────────────────────────────── */
+
+int cmd_confirm(void)
+{
+    if (fw_rollback_confirm() != 0) {
+        fprintf(stderr, "No pending rollback to confirm\n");
+        return 1;
+    }
+    printf("Configuration confirmed, rollback timer cancelled\n");
+    return 0;
+}
+
+/* ── Start with rollback ──────────────────────────────────────────── */
+
+int cmd_start_with_rollback(fw_config_t *cfg, const char *config_path,
+                            int verbose, int rollback_timeout)
+{
+    /* Set rollback context */
+    fw_rollback_set_context(cfg, config_path);
+
+    /* Start rollback timer before applying */
+    if (fw_rollback_start(rollback_timeout) != 0) {
+        fprintf(stderr, "Failed to start rollback timer\n");
+        return 1;
+    }
+
+    printf("Rollback timer started: %d seconds to confirm\n", rollback_timeout);
+
+    /* Apply rules */
+    int ret = cmd_start(cfg, verbose);
+    if (ret != 0) {
+        /* Apply failed, cancel the timer and rollback immediately */
+        fw_rollback_cancel();
+        return ret;
+    }
+
+    printf("Run 'firewallo confirm' within %d seconds to keep this configuration\n",
+           rollback_timeout);
+    return 0;
+}
+
+/* ── Reload with rollback ─────────────────────────────────────────── */
+
+int cmd_reload_with_rollback(fw_config_t *cfg, const char *config_path,
+                             int verbose, int rollback_timeout)
+{
+    /* Set rollback context */
+    fw_rollback_set_context(cfg, config_path);
+
+    /* Start rollback timer before applying */
+    if (fw_rollback_start(rollback_timeout) != 0) {
+        fprintf(stderr, "Failed to start rollback timer\n");
+        return 1;
+    }
+
+    printf("Rollback timer started: %d seconds to confirm\n", rollback_timeout);
+
+    /* Reload rules */
+    int ret = cmd_reload(cfg, config_path, verbose);
+    if (ret != 0) {
+        fw_rollback_cancel();
+        return ret;
+    }
+
+    printf("Run 'firewallo confirm' within %d seconds to keep this configuration\n",
+           rollback_timeout);
+    return 0;
 }
 
 /* ── Version ───────────────────────────────────────────────────────── */

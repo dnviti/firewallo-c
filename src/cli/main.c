@@ -1,9 +1,11 @@
 #include "commands.h"
 #include "firewallo/config.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/rollback.h"
 #include "firewallo/log.h"
 #include "firewallo/i18n.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -27,6 +29,7 @@ static void print_usage(void)
         "  export          Export configuration backup\n"
         "  restore <file>  Restore configuration from backup\n"
         "  switch <nft|ipt> Switch backend between nftables and iptables\n"
+        "  confirm         Confirm pending config (cancel rollback timer)\n"
         "  version         Show version\n"
         "\n"
         "Config editing:\n"
@@ -42,6 +45,7 @@ static void print_usage(void)
         "  -c, --config <path>  Config file (default: /etc/firewallo/firewallo.json)\n"
         "  -v, --verbose        Verbose output (show all commands)\n"
         "  -n, --dry-run        Show commands without executing\n"
+        "  -t, --rollback-timeout <N>  Auto-rollback after N seconds (default: 60)\n"
         "  -h, --help           Show this help\n"
     );
 }
@@ -51,17 +55,19 @@ int main(int argc, char *argv[])
     const char *config_path = FW_DEFAULT_CONFIG_PATH;
     int verbose = 0;
     int dry_run = 0;
+    int rollback_timeout = 0; /* 0 means no rollback timer */
 
     static struct option long_opts[] = {
-        {"config",  required_argument, NULL, 'c'},
-        {"verbose", no_argument,       NULL, 'v'},
-        {"dry-run", no_argument,       NULL, 'n'},
-        {"help",    no_argument,       NULL, 'h'},
+        {"config",           required_argument, NULL, 'c'},
+        {"verbose",          no_argument,       NULL, 'v'},
+        {"dry-run",          no_argument,       NULL, 'n'},
+        {"rollback-timeout", required_argument, NULL, 't'},
+        {"help",             no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:vnh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:vnt:h", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'c':
             config_path = optarg;
@@ -72,6 +78,13 @@ int main(int argc, char *argv[])
         case 'n':
             dry_run = 1;
             verbose = 1;
+            break;
+        case 't':
+            rollback_timeout = atoi(optarg);
+            if (rollback_timeout <= 0) {
+                fprintf(stderr, "Rollback timeout must be a positive integer\n");
+                return 1;
+            }
             break;
         case 'h':
             print_usage();
@@ -132,9 +145,12 @@ int main(int argc, char *argv[])
 
     /* Dispatch command */
     int ret = 0;
-    if (strcmp(command, "start") == 0)
-        ret = cmd_start(&cfg, verbose);
-    else if (strcmp(command, "stop") == 0)
+    if (strcmp(command, "start") == 0) {
+        if (rollback_timeout > 0)
+            ret = cmd_start_with_rollback(&cfg, config_path, verbose, rollback_timeout);
+        else
+            ret = cmd_start(&cfg, verbose);
+    } else if (strcmp(command, "stop") == 0)
         ret = cmd_stop(&cfg, verbose);
     else if (strcmp(command, "restart") == 0)
         ret = cmd_restart(&cfg, config_path, verbose);
@@ -164,8 +180,13 @@ int main(int argc, char *argv[])
             return 1;
         }
         ret = cmd_switch_backend(&cfg, argv[optind + 1], config_path);
-    } else if (strcmp(command, "reload") == 0)
-        ret = cmd_reload(&cfg, config_path, verbose);
+    } else if (strcmp(command, "reload") == 0) {
+        if (rollback_timeout > 0)
+            ret = cmd_reload_with_rollback(&cfg, config_path, verbose, rollback_timeout);
+        else
+            ret = cmd_reload(&cfg, config_path, verbose);
+    } else if (strcmp(command, "confirm") == 0)
+        ret = cmd_confirm();
     else if (strcmp(command, "set-interface") == 0) {
         if (optind + 3 >= argc) {
             fprintf(stderr, "Usage: firewallo set-interface <zone> <add|remove> <iface>\n");

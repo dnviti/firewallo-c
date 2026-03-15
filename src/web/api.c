@@ -2,6 +2,7 @@
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/rollback.h"
 #include "firewallo/sysctl.h"
 #include "firewallo/validate.h"
 #include "firewallo/util.h"
@@ -11,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
@@ -696,6 +698,41 @@ static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
     api_ok_json(resp, data);
 }
 
+/* ── POST /api/v1/firewall/confirm ─────────────────────────────────── */
+
+static void api_firewall_confirm(http_response_t *resp)
+{
+    if (fw_rollback_confirm() != 0) {
+        api_error(resp, 400, "No pending rollback to confirm");
+        return;
+    }
+    api_ok_msg(resp, "Configuration confirmed, rollback timer cancelled");
+}
+
+/* ── GET /api/v1/firewall/rollback-status ──────────────────────────── */
+
+static void api_firewall_rollback_status(http_response_t *resp)
+{
+    fw_rollback_state_t state;
+    fw_rollback_status(&state);
+
+    json_value_t *data = json_new_object();
+    json_object_set(data, "pending", json_new_bool(state.pending));
+
+    if (state.pending) {
+        time_t now = time(NULL);
+        int remaining = (int)(state.deadline - now);
+        if (remaining < 0) remaining = 0;
+        json_object_set(data, "remaining_seconds", json_new_number(remaining));
+        json_object_set(data, "deadline", json_new_number((double)state.deadline));
+    } else {
+        json_object_set(data, "remaining_seconds", json_new_number(0));
+        json_object_set(data, "deadline", json_new_number(0));
+    }
+
+    api_ok_json(resp, data);
+}
+
 /* ── Main API dispatcher ──────────────────────────────────────────── */
 
 int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
@@ -845,6 +882,14 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         }
         if (strcmp(sub, "preview") == 0 && strcmp(method, "POST") == 0) {
             api_firewall_preview(srv, resp);
+            return 0;
+        }
+        if (strcmp(sub, "confirm") == 0 && strcmp(method, "POST") == 0) {
+            api_firewall_confirm(resp);
+            return 0;
+        }
+        if (strcmp(sub, "rollback-status") == 0 && strcmp(method, "GET") == 0) {
+            api_firewall_rollback_status(resp);
             return 0;
         }
         if (strcmp(method, "POST") == 0) {
