@@ -2,6 +2,7 @@
 #define FIREWALLO_HTTPD_H
 
 #include "firewallo/types.h"
+#include "firewallo/auth.h"
 #include <stddef.h>
 
 #define HTTP_MAX_HEADERS 2048
@@ -15,6 +16,7 @@ typedef struct {
     char path[HTTP_MAX_PATH];
     char query[HTTP_MAX_QUERY];
     char content_type[128];
+    char authorization[AUTH_TOKEN_MAX + 16]; /* "Bearer <token>" */
     size_t content_length;
     char *body;
     size_t body_len;
@@ -38,6 +40,7 @@ typedef struct {
     const char *webroot;
     const char *config_path;
     fw_config_t *config;
+    char api_token[AUTH_TOKEN_MAX]; /* loaded API token (empty = auth disabled) */
     volatile int running;
 } httpd_t;
 

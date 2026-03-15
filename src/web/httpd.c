@@ -48,6 +48,8 @@ void http_response_set_json(http_response_t *resp, int status, char *json)
     case 201: fw_strlcpy(resp->status_text, "Created", sizeof(resp->status_text)); break;
     case 204: fw_strlcpy(resp->status_text, "No Content", sizeof(resp->status_text)); break;
     case 400: fw_strlcpy(resp->status_text, "Bad Request", sizeof(resp->status_text)); break;
+    case 401: fw_strlcpy(resp->status_text, "Unauthorized", sizeof(resp->status_text)); break;
+    case 403: fw_strlcpy(resp->status_text, "Forbidden", sizeof(resp->status_text)); break;
     case 404: fw_strlcpy(resp->status_text, "Not Found", sizeof(resp->status_text)); break;
     case 405: fw_strlcpy(resp->status_text, "Method Not Allowed", sizeof(resp->status_text)); break;
     case 500: fw_strlcpy(resp->status_text, "Internal Server Error", sizeof(resp->status_text)); break;
@@ -129,6 +131,14 @@ static int parse_request(const char *raw, size_t raw_len, http_request_t *req)
                 vlen = sizeof(req->content_type) - 1;
             memcpy(req->content_type, val, vlen);
             req->content_type[vlen] = '\0';
+        } else if (strncasecmp(h, "Authorization:", 14) == 0) {
+            const char *val = h + 14;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->authorization))
+                vlen = sizeof(req->authorization) - 1;
+            memcpy(req->authorization, val, vlen);
+            req->authorization[vlen] = '\0';
         }
         h = nl + 2;
     }
@@ -169,7 +179,7 @@ static void send_response(int fd, const http_response_t *resp)
         "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'\r\n"
         "Access-Control-Allow-Origin: *\r\n"
         "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-        "Access-Control-Allow-Headers: Content-Type\r\n"
+        "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
         "\r\n",
         resp->status, resp->status_text,
         resp->content_type,
