@@ -165,6 +165,39 @@ static int parse_request(const char *raw, size_t raw_len, http_request_t *req)
                 vlen = sizeof(req->authorization) - 1;
             memcpy(req->authorization, val, vlen);
             req->authorization[vlen] = '\0';
+        } else if (strncasecmp(h, "Host:", 5) == 0) {
+            const char *val = h + 5;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->host))
+                vlen = sizeof(req->host) - 1;
+            memcpy(req->host, val, vlen);
+            req->host[vlen] = '\0';
+        } else if (strncasecmp(h, "Origin:", 7) == 0) {
+            const char *val = h + 7;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->origin))
+                vlen = sizeof(req->origin) - 1;
+            memcpy(req->origin, val, vlen);
+            req->origin[vlen] = '\0';
+        } else if (strncasecmp(h, "Referer:", 8) == 0 && req->origin[0] == '\0') {
+            /* Use Referer as fallback if Origin was not set */
+            const char *val = h + 8;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->origin))
+                vlen = sizeof(req->origin) - 1;
+            memcpy(req->origin, val, vlen);
+            req->origin[vlen] = '\0';
+        } else if (strncasecmp(h, "X-Requested-With:", 17) == 0) {
+            const char *val = h + 17;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->x_requested_with))
+                vlen = sizeof(req->x_requested_with) - 1;
+            memcpy(req->x_requested_with, val, vlen);
+            req->x_requested_with[vlen] = '\0';
         }
         h = nl + 2;
     }
