@@ -4,21 +4,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 int static_serve_file(const char *webroot, const char *path, http_response_t *resp)
 {
-    /* Prevent directory traversal */
-    if (strstr(path, ".."))
-        return -1;
-
     /* Default to index.html */
     const char *file_path = path;
     if (strcmp(path, "/") == 0)
         file_path = "/index.html";
 
-    /* Build full path */
-    char fullpath[1024];
-    snprintf(fullpath, sizeof(fullpath), "%s%s", webroot, file_path);
+    /* Build candidate path */
+    char candidate[PATH_MAX];
+    snprintf(candidate, sizeof(candidate), "%s%s", webroot, file_path);
+
+    /* Resolve webroot to an absolute canonical path */
+    char real_webroot[PATH_MAX];
+    if (!realpath(webroot, real_webroot))
+        return -1;
+    size_t webroot_len = strlen(real_webroot);
+
+    /* Resolve requested file to an absolute canonical path */
+    char fullpath[PATH_MAX];
+    if (!realpath(candidate, fullpath))
+        return -1;
+
+    /* Prevent directory traversal: resolved path must be within webroot */
+    if (strncmp(fullpath, real_webroot, webroot_len) != 0 ||
+        (fullpath[webroot_len] != '/' && fullpath[webroot_len] != '\0'))
+        return -1;
 
     /* Read file */
     size_t len;
