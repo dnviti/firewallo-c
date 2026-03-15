@@ -21,14 +21,22 @@
 #define HTTPD_CONN_TIMEOUT_SEC  10   /* Max total connection time (s)  */
 
 static volatile sig_atomic_t g_active_children = 0;
+static volatile sig_atomic_t g_sigchld_fired = 0;
 
 static void sigchld_handler(int sig)
 {
     (void)sig;
-    int saved_errno = errno;
-    while (waitpid(-1, NULL, WNOHANG) > 0)
-        g_active_children--;
-    errno = saved_errno;
+    g_sigchld_fired = 1;
+}
+
+/* Reap finished children and update counter (call with SIGCHLD blocked) */
+static void reap_children(void)
+{
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
+        if (g_active_children > 0)
+            g_active_children--;
+    }
+    g_sigchld_fired = 0;
 }
 
 /* ── Response helpers ──────────────────────────────────────────────── */
@@ -336,29 +344,54 @@ int httpd_run(httpd_t *srv)
     fw_log(LOG_INFO, "firewallo-web listening on %s:%d",
            srv->bind_addr ? srv->bind_addr : "0.0.0.0", srv->port);
 
-    /* Install SIGCHLD handler to reap child processes */
+    /* Install SIGCHLD handler to set reap flag */
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-    sigaction(SIGCHLD, &sa, NULL);
+    if (sigaction(SIGCHLD, &sa, NULL) < 0) {
+        perror("sigaction");
+        return -1;
+    }
+
+    /* Prepare signal mask for critical sections */
+    sigset_t block_chld, prev_mask;
+    sigemptyset(&block_chld);
+    sigaddset(&block_chld, SIGCHLD);
 
     struct pollfd pfd = {.fd = srv->listen_fd, .events = POLLIN};
 
     while (srv->running) {
         int ready = poll(&pfd, 1, 1000);
         if (ready < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                /* Reap outside critical section is fine here —
+                   we'll reap again inside the critical section below */
+                continue;
+            }
             perror("poll");
             break;
         }
-        if (ready == 0) continue;
+
+        /* Block SIGCHLD for reaping + capacity check + fork + increment */
+        sigprocmask(SIG_BLOCK, &block_chld, &prev_mask);
+
+        /* Reap any finished children */
+        if (g_sigchld_fired)
+            reap_children();
+
+        if (ready == 0) {
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+            continue;
+        }
 
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(srv->listen_fd,
                                (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             if (errno == EINTR) continue;
             perror("accept");
             continue;
@@ -369,6 +402,7 @@ int httpd_run(httpd_t *srv)
             fw_log(LOG_WARN, "Max children (%d) reached, rejecting connection",
                    HTTPD_MAX_CHILDREN);
             close(client_fd);
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             continue;
         }
 
@@ -376,11 +410,13 @@ int httpd_run(httpd_t *srv)
         if (pid < 0) {
             perror("fork");
             close(client_fd);
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             continue;
         }
 
         if (pid == 0) {
             /* ── Child process ────────────────────────────────── */
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             close(srv->listen_fd);
 
             /* Hard limit on total connection time */
@@ -392,17 +428,21 @@ int httpd_run(httpd_t *srv)
 
         /* ── Parent process ───────────────────────────────────── */
         g_active_children++;
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
         close(client_fd);
     }
 
     close(srv->listen_fd);
 
     /* Wait for remaining children before exit */
-    while (g_active_children > 0) {
-        if (waitpid(-1, NULL, 0) > 0)
-            g_active_children--;
-        else
-            break;
+    for (;;) {
+        pid_t w = waitpid(-1, NULL, 0);
+        if (w > 0)
+            continue;
+        if (w < 0 && errno == EINTR)
+            continue;
+        /* ECHILD or other error — no more children */
+        break;
     }
 
     return 0;
