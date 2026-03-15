@@ -239,6 +239,30 @@ static void nft_add_filter_explicit_rule(fw_cmdlist_t *out, const char *chain,
                             " dport %d", rule->dst_port.start);
     }
 
+    /* Schedule constraints */
+    if (rule->schedule.enabled) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                        " meta hour \\\"%02d:%02d\\\"-\\\"%02d:%02d\\\"",
+                        rule->schedule.hour_start, rule->schedule.minute_start,
+                        rule->schedule.hour_end, rule->schedule.minute_end);
+
+        /* Build day list for meta day */
+        const char *day_names[] = {"Monday", "Tuesday", "Wednesday", "Thursday",
+                                   "Friday", "Saturday", "Sunday"};
+        char days_buf[256] = {0};
+        int first = 1;
+        for (int d = 0; d < 7; d++) {
+            if (rule->schedule.days & (1 << d)) {
+                if (!first) strncat(days_buf, ",", sizeof(days_buf) - strlen(days_buf) - 1);
+                strncat(days_buf, day_names[d], sizeof(days_buf) - strlen(days_buf) - 1);
+                first = 0;
+            }
+        }
+        if (days_buf[0])
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                            " meta day { %s }", days_buf);
+    }
+
     const char *comment = rule->comment[0] ? rule->comment : chain;
     snprintf(buf + pos, sizeof(buf) - (size_t)pos,
              " log prefix \\\"%s : \\\" counter %s", comment, act);

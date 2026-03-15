@@ -1,5 +1,6 @@
 #include "firewallo/validate.h"
 #include <stdio.h>
+#include <string.h>
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -181,6 +182,84 @@ static void test_mark(void)
     ASSERT(fw_validate_mark("12abc") == 0, "mixed decimal/letters");
 }
 
+static void test_schedule(void)
+{
+    printf("test_schedule\n");
+
+    /* Valid schedules */
+    fw_schedule_t sched;
+    memset(&sched, 0, sizeof(sched));
+
+    /* Disabled schedule is always valid */
+    sched.enabled = 0;
+    ASSERT(fw_validate_schedule(&sched) == 1, "disabled schedule is valid");
+
+    /* Valid enabled schedule: Mon-Fri 08:00-17:00 */
+    sched.enabled = 1;
+    sched.hour_start = 8;
+    sched.minute_start = 0;
+    sched.hour_end = 17;
+    sched.minute_end = 0;
+    sched.days = 0x1F; /* Mon-Fri = bits 0-4 */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid weekday schedule");
+
+    /* Valid: all days, midnight to midnight */
+    sched.hour_start = 0;
+    sched.minute_start = 0;
+    sched.hour_end = 23;
+    sched.minute_end = 59;
+    sched.days = 0x7F; /* all days */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid full schedule");
+
+    /* Valid: single day */
+    sched.days = 0x01; /* Monday only */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid single day");
+
+    /* Valid: Sunday only */
+    sched.days = 0x40; /* bit 6 = Sunday */
+    ASSERT(fw_validate_schedule(&sched) == 1, "valid Sunday only");
+
+    /* Invalid: NULL */
+    ASSERT(fw_validate_schedule(NULL) == 0, "null schedule");
+
+    /* Invalid: hour out of range */
+    sched.hour_start = 24;
+    sched.days = 0x1F;
+    ASSERT(fw_validate_schedule(&sched) == 0, "hour_start 24");
+    sched.hour_start = 8;
+
+    sched.hour_end = 25;
+    ASSERT(fw_validate_schedule(&sched) == 0, "hour_end 25");
+    sched.hour_end = 17;
+
+    /* Invalid: negative hour */
+    sched.hour_start = -1;
+    ASSERT(fw_validate_schedule(&sched) == 0, "negative hour_start");
+    sched.hour_start = 8;
+
+    /* Invalid: minute out of range */
+    sched.minute_start = 60;
+    ASSERT(fw_validate_schedule(&sched) == 0, "minute_start 60");
+    sched.minute_start = 0;
+
+    sched.minute_end = 99;
+    ASSERT(fw_validate_schedule(&sched) == 0, "minute_end 99");
+    sched.minute_end = 0;
+
+    /* Invalid: negative minute */
+    sched.minute_end = -1;
+    ASSERT(fw_validate_schedule(&sched) == 0, "negative minute_end");
+    sched.minute_end = 0;
+
+    /* Invalid: no days set */
+    sched.days = 0;
+    ASSERT(fw_validate_schedule(&sched) == 0, "no days set");
+
+    /* Invalid: bits outside 0-6 */
+    sched.days = 0x80;
+    ASSERT(fw_validate_schedule(&sched) == 0, "invalid day bit 7");
+}
+
 int main(void)
 {
     printf("=== Validator Tests ===\n\n");
@@ -195,6 +274,7 @@ int main(void)
     test_comment();
     test_addr_field();
     test_mark();
+    test_schedule();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

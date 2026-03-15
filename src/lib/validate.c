@@ -207,3 +207,33 @@ int fw_validate_mark(const char *mark)
     }
     return 1;
 }
+
+int fw_validate_schedule(const fw_schedule_t *sched)
+{
+    if (!sched)
+        return 0;
+
+    /* If not enabled, schedule is valid (unused) */
+    if (!sched->enabled)
+        return 1;
+
+    /* Validate hours 0-23 */
+    if (sched->hour_start < 0 || sched->hour_start > 23)
+        return 0;
+    if (sched->hour_end < 0 || sched->hour_end > 23)
+        return 0;
+
+    /* Validate minutes 0-59 */
+    if (sched->minute_start < 0 || sched->minute_start > 59)
+        return 0;
+    if (sched->minute_end < 0 || sched->minute_end > 59)
+        return 0;
+
+    /* Days bitmask must have at least one day set (bits 0-6) */
+    if (sched->days == 0)
+        return 0;
+    if (sched->days & ~0x7F)
+        return 0;
+
+    return 1;
+}

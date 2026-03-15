@@ -67,6 +67,16 @@ typedef struct {
     int end;
 } fw_port_t;
 
+/* Time-based schedule for rules */
+typedef struct {
+    int enabled;
+    int hour_start;
+    int minute_start;
+    int hour_end;
+    int minute_end;
+    unsigned char days; /* bitmask: bit0=Mon, bit1=Tue, ..., bit6=Sun */
+} fw_schedule_t;
+
 /* Explicit filter rule (beyond simple port opens) */
 typedef struct {
     char src_addr[FW_MAX_ADDR];
@@ -76,6 +86,7 @@ typedef struct {
     fw_port_t dst_port;
     fw_action_t action;
     char comment[FW_MAX_COMMENT];
+    fw_schedule_t schedule;
 } fw_filter_rule_t;
 
 /* A filter chain (one of 25) */
