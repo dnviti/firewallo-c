@@ -6,6 +6,7 @@
 #include "firewallo/sysctl.h"
 #include "firewallo/validate.h"
 #include "firewallo/webhook.h"
+#include "firewallo/alias.h"
 #include "firewallo/util.h"
 #include "firewallo/diff.h"
 #include "firewallo/log.h"
@@ -827,6 +828,7 @@ static void api_add_webhook(httpd_t *srv, const http_request_t *req, http_respon
         api_error(resp, 400, "Max webhooks reached");
         return;
     }
+
     if (!req->body) { api_error(resp, 400, "Empty body"); return; }
 
     char err[256];
@@ -906,6 +908,7 @@ static void api_update_webhook(httpd_t *srv, int idx,
         api_error(resp, 404, "Webhook index out of range");
         return;
     }
+
     if (!req->body) { api_error(resp, 400, "Empty body"); return; }
 
     char err[256];
@@ -1007,12 +1010,185 @@ static void api_test_webhook(httpd_t *srv, int idx, http_response_t *resp)
     api_ok_json(resp, data);
 }
 
+/* ── GET /api/v1/config/aliases ─────────────────────────────────────── */
+
+static void api_get_aliases(httpd_t *srv, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    json_value_t *arr = json_new_array();
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "name", json_new_string(a->name));
+        json_object_set(obj, "type",
+                        json_new_string(a->type == ALIAS_TYPE_PORT ? "port" : "ip"));
+        json_value_t *entries = json_new_array();
+        for (int e = 0; e < a->entry_count; e++)
+            json_array_append(entries, json_new_string(a->entries[e]));
+        json_object_set(obj, "entries", entries);
+        json_object_set(obj, "comment", json_new_string(a->comment));
+        json_array_append(arr, obj);
+    }
+    api_ok_json(resp, arr);
+}
+
+/* ── GET /api/v1/config/aliases/{name} ─────────────────────────────── */
+
+static void api_get_alias(httpd_t *srv, const char *name, http_response_t *resp)
+{
+    const fw_alias_t *a = fw_alias_find(srv->config, name);
+    if (!a) { api_error(resp, 404, "Alias not found"); return; }
+
+    json_value_t *obj = json_new_object();
+    json_object_set(obj, "name", json_new_string(a->name));
+    json_object_set(obj, "type",
+                    json_new_string(a->type == ALIAS_TYPE_PORT ? "port" : "ip"));
+    json_value_t *entries = json_new_array();
+    for (int e = 0; e < a->entry_count; e++)
+        json_array_append(entries, json_new_string(a->entries[e]));
+    json_object_set(obj, "entries", entries);
+    json_object_set(obj, "comment", json_new_string(a->comment));
+    api_ok_json(resp, obj);
+}
+
+/* ── POST /api/v1/config/aliases ───────────────────────────────────── */
+
+static void api_create_alias(httpd_t *srv, const http_request_t *req, http_response_t *resp)
+{
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    fw_config_t *cfg = srv->config;
+    if (cfg->alias_count >= FW_MAX_ALIASES) {
+        json_free(body);
+        api_error(resp, 400, "Max aliases reached");
+        return;
+    }
+
+    const char *name = json_string_value(json_object_get(body, "name"));
+    if (!name || !fw_alias_validate_name(name)) {
+        json_free(body);
+        api_error(resp, 400, "Invalid alias name");
+        return;
+    }
+
+    /* Check duplicate */
+    if (fw_alias_find(cfg, name)) {
+        json_free(body);
+        api_error(resp, 400, "Alias already exists");
+        return;
+    }
+
+    fw_alias_t *a = &cfg->aliases[cfg->alias_count];
+    memset(a, 0, sizeof(*a));
+    fw_strlcpy(a->name, name, sizeof(a->name));
+
+    const char *type_str = json_string_value(json_object_get(body, "type"));
+    if (type_str && strcmp(type_str, "port") == 0)
+        a->type = ALIAS_TYPE_PORT;
+    else
+        a->type = ALIAS_TYPE_IP;
+
+    json_value_t *entries = json_object_get(body, "entries");
+    if (entries && entries->type == JSON_ARRAY) {
+        int n = json_array_count(entries);
+        for (int i = 0; i < n && a->entry_count < FW_MAX_ALIAS_ENTRIES; i++) {
+            const char *e = json_string_value(json_array_get(entries, i));
+            if (e) {
+                fw_strlcpy(a->entries[a->entry_count], e, FW_MAX_ADDR);
+                a->entry_count++;
+            }
+        }
+    }
+
+    const char *comment = json_string_value(json_object_get(body, "comment"));
+    if (comment) fw_strlcpy(a->comment, comment, sizeof(a->comment));
+
+    cfg->alias_count++;
+    json_free(body);
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Alias created");
+}
+
+/* ── PUT /api/v1/config/aliases/{name} ─────────────────────────────── */
+
+static void api_update_alias(httpd_t *srv, const char *name,
+                              const http_request_t *req, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    fw_alias_t *a = NULL;
+    for (int i = 0; i < cfg->alias_count; i++) {
+        if (strcmp(cfg->aliases[i].name, name) == 0) {
+            a = &cfg->aliases[i];
+            break;
+        }
+    }
+    if (!a) { api_error(resp, 404, "Alias not found"); return; }
+
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    /* Update entries if provided */
+    json_value_t *entries = json_object_get(body, "entries");
+    if (entries && entries->type == JSON_ARRAY) {
+        a->entry_count = 0;
+        int n = json_array_count(entries);
+        for (int i = 0; i < n && a->entry_count < FW_MAX_ALIAS_ENTRIES; i++) {
+            const char *e = json_string_value(json_array_get(entries, i));
+            if (e) {
+                fw_strlcpy(a->entries[a->entry_count], e, FW_MAX_ADDR);
+                a->entry_count++;
+            }
+        }
+    }
+
+    /* Update comment if provided */
+    const char *comment = json_string_value(json_object_get(body, "comment"));
+    if (comment) fw_strlcpy(a->comment, comment, sizeof(a->comment));
+
+    json_free(body);
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Alias updated");
+}
+
+/* ── DELETE /api/v1/config/aliases/{name} ──────────────────────────── */
+
+static void api_delete_alias(httpd_t *srv, const char *name, http_response_t *resp)
+{
+    fw_config_t *cfg = srv->config;
+    int found = -1;
+    for (int i = 0; i < cfg->alias_count; i++) {
+        if (strcmp(cfg->aliases[i].name, name) == 0) {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0) { api_error(resp, 404, "Alias not found"); return; }
+
+    /* Remove by shifting */
+    for (int i = found; i < cfg->alias_count - 1; i++)
+        cfg->aliases[i] = cfg->aliases[i + 1];
+    cfg->alias_count--;
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Alias deleted");
+}
+
 /* ── Main API dispatcher ──────────────────────────────────────────── */
 
 int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
 {
     const char *path = req->path + 8; /* skip "/api/v1/" */
     const char *method = req->method;
+    const char *sub;
 
     /* GET /api/v1/version */
     if (strcmp(path, "version") == 0 && strcmp(method, "GET") == 0) {
@@ -1062,7 +1238,6 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
     }
 
     /* PUT/DELETE /api/v1/config/webhooks/{index}[/test] */
-    const char *sub;
     if ((sub = path_after(path, "config/webhooks/")) != NULL) {
         /* Extract the index segment and parse with strtol */
         const char *slash = strchr(sub, '/');
@@ -1104,6 +1279,25 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
             }
         }
         api_error(resp, 404, "Webhook endpoint not found");
+        return 0;
+    }
+
+    /* GET/POST /api/v1/config/aliases */
+    if (strcmp(path, "config/aliases") == 0) {
+        if (strcmp(method, "GET") == 0) api_get_aliases(srv, resp);
+        else if (strcmp(method, "POST") == 0) api_create_alias(srv, req, resp);
+        else api_error(resp, 405, "Method not allowed");
+        return 0;
+    }
+
+    /* GET/PUT/DELETE /api/v1/config/aliases/{name} */
+    if ((sub = path_after(path, "config/aliases/")) != NULL) {
+        char alias_name[FW_MAX_ALIAS_NAME];
+        fw_strlcpy(alias_name, sub, sizeof(alias_name));
+        if (strcmp(method, "GET") == 0) api_get_alias(srv, alias_name, resp);
+        else if (strcmp(method, "PUT") == 0) api_update_alias(srv, alias_name, req, resp);
+        else if (strcmp(method, "DELETE") == 0) api_delete_alias(srv, alias_name, resp);
+        else api_error(resp, 405, "Method not allowed");
         return 0;
     }
 

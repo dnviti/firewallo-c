@@ -2,8 +2,10 @@
 #include "firewallo/backend.h"
 #include "firewallo/zone.h"
 #include "firewallo/config.h"
+#include "firewallo/alias.h"
 #include "firewallo/sysctl.h"
 #include "firewallo/log.h"
+#include "firewallo/util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -118,6 +120,45 @@ static void add_forward_jumps(const fw_config_t *cfg, const fw_backend_ops_t *op
             ops->add_forward_jump(out, src_ifs[s], dst_ifs[d], chain);
 }
 
+/* ── Alias-aware explicit rule emission ─────────────────────────────── */
+
+static void emit_explicit_rule(const fw_config_t *cfg, const fw_backend_ops_t *ops,
+                               fw_cmdlist_t *out, const char *chain_name,
+                               const fw_filter_rule_t *rule)
+{
+    /* Collect source addresses */
+    char src_addrs[FW_MAX_ALIAS_ENTRIES][FW_MAX_ADDR];
+    int src_count = 1;
+    if (fw_alias_is_ref(rule->src_addr)) {
+        src_count = fw_alias_resolve_ip(cfg, rule->src_addr,
+                                        src_addrs, FW_MAX_ALIAS_ENTRIES);
+        if (src_count < 0) { src_count = 1; fw_strlcpy(src_addrs[0], rule->src_addr, FW_MAX_ADDR); }
+    } else {
+        fw_strlcpy(src_addrs[0], rule->src_addr, FW_MAX_ADDR);
+    }
+
+    /* Collect destination addresses */
+    char dst_addrs[FW_MAX_ALIAS_ENTRIES][FW_MAX_ADDR];
+    int dst_count = 1;
+    if (fw_alias_is_ref(rule->dst_addr)) {
+        dst_count = fw_alias_resolve_ip(cfg, rule->dst_addr,
+                                        dst_addrs, FW_MAX_ALIAS_ENTRIES);
+        if (dst_count < 0) { dst_count = 1; fw_strlcpy(dst_addrs[0], rule->dst_addr, FW_MAX_ADDR); }
+    } else {
+        fw_strlcpy(dst_addrs[0], rule->dst_addr, FW_MAX_ADDR);
+    }
+
+    /* Emit one rule per combination */
+    for (int s = 0; s < src_count; s++) {
+        for (int d = 0; d < dst_count; d++) {
+            fw_filter_rule_t resolved = *rule;
+            fw_strlcpy(resolved.src_addr, src_addrs[s], sizeof(resolved.src_addr));
+            fw_strlcpy(resolved.dst_addr, dst_addrs[d], sizeof(resolved.dst_addr));
+            ops->add_filter_explicit_rule(out, chain_name, &resolved);
+        }
+    }
+}
+
 /* ── Compile start ─────────────────────────────────────────────────── */
 
 int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
@@ -125,11 +166,51 @@ int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
     fw_cmdlist_init(out);
     const fw_backend_ops_t *ops = fw_backend_get(cfg->backend);
 
+    /* 0. Generate alias sets (nft named sets / iptables ipsets) */
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        if (cfg->backend == BACKEND_NFT) {
+            /* nftables: create set in filter table after table is created */
+            /* (deferred to after create_filter_table below) */
+        } else {
+            /* iptables: create ipset before flush (ipset is independent) */
+            fw_cmdlist_append(out, "/usr/sbin/ipset destroy %s 2>/dev/null || true", a->name);
+            if (a->type == ALIAS_TYPE_IP)
+                fw_cmdlist_append(out, "/usr/sbin/ipset create %s hash:net", a->name);
+            else
+                fw_cmdlist_append(out, "/usr/sbin/ipset create %s bitmap:port range 1-65535", a->name);
+            for (int e = 0; e < a->entry_count; e++)
+                fw_cmdlist_append(out, "/usr/sbin/ipset add %s %s", a->name, a->entries[e]);
+        }
+    }
+
     /* 1. Flush existing rules */
     ops->flush_ruleset(out);
 
     /* 2. Create filter table and base chains with DROP policy */
     ops->create_filter_table(out);
+
+    /* 2a. Create nftables named sets for aliases */
+    if (cfg->backend == BACKEND_NFT) {
+        for (int i = 0; i < cfg->alias_count; i++) {
+            const fw_alias_t *a = &cfg->aliases[i];
+            if (a->type == ALIAS_TYPE_IP) {
+                fw_cmdlist_append(out,
+                    "/usr/sbin/nft \"add set ip filter %s { type ipv4_addr; flags interval; }\"",
+                    a->name);
+            } else {
+                fw_cmdlist_append(out,
+                    "/usr/sbin/nft \"add set ip filter %s { type inet_service; }\"",
+                    a->name);
+            }
+            for (int e = 0; e < a->entry_count; e++) {
+                fw_cmdlist_append(out,
+                    "/usr/sbin/nft \"add element ip filter %s { %s }\"",
+                    a->name, a->entries[e]);
+            }
+        }
+    }
+
     ops->create_base_chain(out, "INPUT", "input", 0, "drop");
     ops->create_base_chain(out, "FORWARD", "forward", 0, "drop");
     ops->create_base_chain(out, "OUTPUT", "output", 0, "drop");
@@ -277,7 +358,7 @@ int fw_compile_start(const fw_config_t *cfg, fw_cmdlist_t *out)
         for (int i = 0; i < ch->udp_port_count; i++)
             ops->add_filter_port_rule(out, ch->name, PROTO_UDP, ch->udp_ports[i]);
         for (int i = 0; i < ch->rule_count; i++)
-            ops->add_filter_explicit_rule(out, ch->name, &ch->rules[i]);
+            emit_explicit_rule(cfg, ops, out, ch->name, &ch->rules[i]);
     }
 
     /* 19. NAT: masquerade LAN ranges to WAN interfaces */

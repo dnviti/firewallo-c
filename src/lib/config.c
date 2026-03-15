@@ -2,6 +2,7 @@
 #include "firewallo/json.h"
 #include "firewallo/validate.h"
 #include "firewallo/webhook.h"
+#include "firewallo/alias.h"
 #include "firewallo/util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -601,6 +602,38 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
+    /* Aliases */
+    json_value_t *aliases_arr = json_object_get(root, "aliases");
+    if (aliases_arr && aliases_arr->type == JSON_ARRAY) {
+        cfg->alias_count = 0;
+        int n = json_array_count(aliases_arr);
+        for (int i = 0; i < n && cfg->alias_count < FW_MAX_ALIASES; i++) {
+            json_value_t *alias = json_array_get(aliases_arr, i);
+            if (!alias || alias->type != JSON_OBJECT) continue;
+
+            fw_alias_t *a = &cfg->aliases[cfg->alias_count];
+            memset(a, 0, sizeof(*a));
+
+            const char *as;
+            as = json_string_value(json_object_get(alias, "name"));
+            if (as) fw_strlcpy(a->name, as, sizeof(a->name));
+
+            as = json_string_value(json_object_get(alias, "type"));
+            if (as && strcmp(as, "port") == 0)
+                a->type = ALIAS_TYPE_PORT;
+            else
+                a->type = ALIAS_TYPE_IP;
+
+            load_string_array(json_object_get(alias, "entries"),
+                              a->entries, &a->entry_count, FW_MAX_ALIAS_ENTRIES);
+
+            as = json_string_value(json_object_get(alias, "comment"));
+            if (as) fw_strlcpy(a->comment, as, sizeof(a->comment));
+
+            cfg->alias_count++;
+        }
+    }
+
     json_free(root);
     return 0;
 }
@@ -911,6 +944,21 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
     }
     json_object_set(root, "webhooks", webhooks_arr);
 
+    /* Aliases */
+    json_value_t *aliases_arr = json_new_array();
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        json_value_t *obj = json_new_object();
+        json_object_set(obj, "name", json_new_string(a->name));
+        json_object_set(obj, "type",
+                        json_new_string(a->type == ALIAS_TYPE_PORT ? "port" : "ip"));
+        json_object_set(obj, "entries",
+                        build_string_array((char(*)[FW_MAX_ADDR])a->entries, a->entry_count));
+        json_object_set(obj, "comment", json_new_string(a->comment));
+        json_array_append(aliases_arr, obj);
+    }
+    json_object_set(root, "aliases", aliases_arr);
+
     return root;
 }
 
@@ -1068,6 +1116,67 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         if (w->retry_count < 0 || w->retry_count > FW_MAX_WEBHOOK_RETRY) {
             snprintf(err, errlen, "invalid webhook retry_count at index %d: %d", i, w->retry_count);
             return -1;
+        }
+    }
+
+    /* Validate aliases */
+    for (int i = 0; i < cfg->alias_count; i++) {
+        const fw_alias_t *a = &cfg->aliases[i];
+        if (!fw_alias_validate_name(a->name)) {
+            snprintf(err, errlen, "invalid alias name: %s", a->name);
+            return -1;
+        }
+        /* Check for duplicates */
+        for (int j = 0; j < i; j++) {
+            if (strcmp(cfg->aliases[j].name, a->name) == 0) {
+                snprintf(err, errlen, "duplicate alias name: %s", a->name);
+                return -1;
+            }
+        }
+        if (a->entry_count == 0) {
+            snprintf(err, errlen, "alias '%s' has no entries", a->name);
+            return -1;
+        }
+        /* Validate entries match type */
+        for (int e = 0; e < a->entry_count; e++) {
+            if (a->type == ALIAS_TYPE_IP) {
+                if (!fw_validate_ipv4(a->entries[e]) &&
+                    !fw_validate_ipv4_cidr(a->entries[e])) {
+                    snprintf(err, errlen, "invalid IP entry '%s' in alias '%s'",
+                             a->entries[e], a->name);
+                    return -1;
+                }
+            } else {
+                if (!fw_validate_port_range(a->entries[e])) {
+                    snprintf(err, errlen, "invalid port entry '%s' in alias '%s'",
+                             a->entries[e], a->name);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    /* Validate $-references in filter rules resolve */
+    for (int c = 0; c < FW_CHAIN_COUNT; c++) {
+        const fw_chain_t *ch = &cfg->chains[c];
+        for (int i = 0; i < ch->rule_count; i++) {
+            const fw_filter_rule_t *r = &ch->rules[i];
+            if (fw_alias_is_ref(r->src_addr)) {
+                const fw_alias_t *a = fw_alias_find(cfg, r->src_addr + 1);
+                if (!a || a->type != ALIAS_TYPE_IP) {
+                    snprintf(err, errlen, "unresolved alias reference '%s' in chain %s rule %d",
+                             r->src_addr, ch->name, i);
+                    return -1;
+                }
+            }
+            if (fw_alias_is_ref(r->dst_addr)) {
+                const fw_alias_t *a = fw_alias_find(cfg, r->dst_addr + 1);
+                if (!a || a->type != ALIAS_TYPE_IP) {
+                    snprintf(err, errlen, "unresolved alias reference '%s' in chain %s rule %d",
+                             r->dst_addr, ch->name, i);
+                    return -1;
+                }
+            }
         }
     }
 

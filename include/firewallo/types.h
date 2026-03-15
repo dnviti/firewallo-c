@@ -15,6 +15,9 @@
 #define FW_MAX_MANGLE       64
 #define FW_MAX_ROUTES       32
 #define FW_MAX_COMMENT     128
+#define FW_MAX_ALIASES      64
+#define FW_MAX_ALIAS_ENTRIES 128
+#define FW_MAX_ALIAS_NAME    32
 #define FW_MAX_VERSION      32
 #define FW_MAX_PROTOCOLS    64
 #define FW_CHAIN_COUNT      25
@@ -22,6 +25,17 @@
 #define FW_MAX_WEBHOOK_URL 512
 #define FW_MAX_WEBHOOK_SECRET 128
 #define FW_MAX_WEBHOOK_RETRY    5
+
+/* Alias types */
+typedef enum { ALIAS_TYPE_IP = 0, ALIAS_TYPE_PORT } fw_alias_type_t;
+
+typedef struct {
+    char name[FW_MAX_ALIAS_NAME];
+    fw_alias_type_t type;
+    char entries[FW_MAX_ALIAS_ENTRIES][FW_MAX_ADDR];
+    int entry_count;
+    char comment[FW_MAX_COMMENT];
+} fw_alias_t;
 
 /* Zones */
 typedef enum {
@@ -253,6 +267,10 @@ typedef struct {
     /* Webhooks */
     fw_webhook_t webhooks[FW_MAX_WEBHOOKS];
     int webhook_count;
+
+    /* Aliases (named address/port groups) */
+    fw_alias_t aliases[FW_MAX_ALIASES];
+    int alias_count;
 } fw_config_t;
 
 #endif /* FIREWALLO_TYPES_H */
