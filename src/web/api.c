@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
@@ -102,17 +103,10 @@ static void api_version(httpd_t *srv, http_response_t *resp)
 
 static void api_get_config(httpd_t *srv, http_response_t *resp)
 {
-    /* Serialize the entire config */
-    const char *tmp = "/tmp/.firewallo_api_cfg.json";
-    if (fw_config_save(tmp, srv->config) != 0) {
-        api_error(resp, 500, "Serialization failed");
-        return;
-    }
-    size_t len;
-    char *json = fw_read_file(tmp, &len);
-    remove(tmp);
+    /* Serialize config directly to memory — no temp files needed */
+    char *json = fw_config_serialize(srv->config);
     if (!json) {
-        api_error(resp, 500, "Read failed");
+        api_error(resp, 500, "Serialization failed");
         return;
     }
 
@@ -134,9 +128,18 @@ static void api_put_config(httpd_t *srv, const http_request_t *req, http_respons
         return;
     }
 
-    /* Write body to temp, load as config */
-    const char *tmp = "/tmp/.firewallo_api_put.json";
-    if (fw_write_file(tmp, req->body, req->body_len) != 0) {
+    /* Write body directly to mkstemp fd to avoid predictable temp paths (TOCTOU) */
+    char tmp[] = "/tmp/.firewallo_api_XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        api_error(resp, 500, "Failed to create temp file");
+        return;
+    }
+
+    ssize_t written = write(fd, req->body, req->body_len);
+    close(fd);
+    if (written < 0 || (size_t)written != req->body_len) {
+        unlink(tmp);
         api_error(resp, 500, "Write failed");
         return;
     }
@@ -144,11 +147,11 @@ static void api_put_config(httpd_t *srv, const http_request_t *req, http_respons
     fw_config_t new_cfg;
     char err[256];
     if (fw_config_load(tmp, &new_cfg, err, sizeof(err)) != 0) {
-        remove(tmp);
+        unlink(tmp);
         api_error(resp, 400, err);
         return;
     }
-    remove(tmp);
+    unlink(tmp);
 
     if (fw_config_validate(&new_cfg, err, sizeof(err)) != 0) {
         api_error(resp, 400, err);

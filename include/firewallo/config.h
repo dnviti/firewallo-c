@@ -13,6 +13,10 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
 /* Save config to JSON file. Returns 0 on success. */
 int fw_config_save(const char *path, const fw_config_t *cfg);
 
+/* Serialize config to a JSON string. Returns malloc'd string or NULL on error.
+ * Caller must free() the returned string. */
+char *fw_config_serialize(const fw_config_t *cfg);
+
 /* Validate a loaded config. Returns 0 if valid, -1 if invalid (error in err). */
 int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen);
 

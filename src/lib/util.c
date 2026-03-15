@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 size_t fw_strlcpy(char *dst, const char *src, size_t size)
 {
@@ -53,21 +54,49 @@ char *fw_read_file(const char *path, size_t *out_len)
 
 int fw_write_file(const char *path, const char *data, size_t len)
 {
-    /* Write to a temporary file, then rename for atomicity */
+    /*
+     * Write to a mkstemp-created temp file in the same directory, then
+     * rename for atomicity.  This avoids predictable temp-file names
+     * (e.g. "%s.tmp") that are vulnerable to symlink attacks in
+     * world-writable directories such as /tmp.
+     */
+
+    /* Build template in the same directory as the target path */
     char tmp[512];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-
-    FILE *f = fopen(tmp, "wb");
-    if (!f)
-        return -1;
-
-    size_t written = fwrite(data, 1, len, f);
-    fclose(f);
-
-    if (written != len) {
-        unlink(tmp);
-        return -1;
+    const char *last_slash = strrchr(path, '/');
+    if (last_slash) {
+        size_t dir_len = (size_t)(last_slash - path + 1);
+        if (dir_len + sizeof(".fw_XXXXXX") > sizeof(tmp))
+            return -1;
+        memcpy(tmp, path, dir_len);
+        memcpy(tmp + dir_len, ".fw_XXXXXX", sizeof(".fw_XXXXXX"));
+    } else {
+        /* No directory component — use current directory */
+        memcpy(tmp, ".fw_XXXXXX", sizeof(".fw_XXXXXX"));
     }
+
+    int fd = mkstemp(tmp);  /* creates with mode 0600, O_EXCL semantics */
+    if (fd < 0)
+        return -1;
+
+    /* Preserve target file permissions when possible */
+    struct stat st;
+    if (stat(path, &st) == 0)
+        fchmod(fd, st.st_mode & 0777);
+
+    const char *p = data;
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t written = write(fd, p, remaining);
+        if (written < 0) {
+            close(fd);
+            unlink(tmp);
+            return -1;
+        }
+        p += written;
+        remaining -= (size_t)written;
+    }
+    close(fd);
 
     if (rename(tmp, path) != 0) {
         unlink(tmp);
