@@ -37,13 +37,18 @@ static void extract_host(const char *src, char *dst, size_t dst_size)
 }
 
 /*
- * CSRF same-origin check for state-changing methods.
+ * CSRF protection for state-changing methods (POST, PUT, DELETE).
  * Returns 0 if the request is allowed, -1 if it should be rejected.
  *
- * Logic:
- * - Only applies to POST, PUT, DELETE methods
- * - If no Origin header (and no Referer), allow (non-browser client)
- * - If Origin/Referer is present, its host must match the Host header
+ * Defence-in-depth strategy:
+ * 1. Accept if the request carries a custom header (X-Requested-With).
+ *    Browsers cannot send custom headers on simple cross-origin requests;
+ *    a CORS preflight would be required, and the server sends no
+ *    Access-Control-Allow-Origin header, so the preflight will fail.
+ * 2. Otherwise, require a same-origin Origin/Referer header that matches
+ *    the Host header.
+ * 3. If neither is present, reject — a browser-initiated cross-origin
+ *    form POST can arrive without Origin/Referer on some user agents.
  */
 static int csrf_check(const http_request_t *req)
 {
@@ -53,11 +58,19 @@ static int csrf_check(const http_request_t *req)
         strcmp(req->method, "DELETE") != 0)
         return 0;
 
-    /* No Origin/Referer => non-browser client, allow */
-    if (req->origin[0] == '\0')
+    /* Custom header present => request required a CORS preflight, allow */
+    if (req->x_requested_with[0] != '\0')
         return 0;
 
-    /* No Host header => can't verify, reject */
+    /* No Origin/Referer and no custom header => reject */
+    if (req->origin[0] == '\0') {
+        fw_log(LOG_WARN, "CSRF: rejecting %s %s — "
+               "no X-Requested-With header and no Origin/Referer",
+               req->method, req->path);
+        return -1;
+    }
+
+    /* No Host header => can't verify origin, reject */
     if (req->host[0] == '\0') {
         fw_log(LOG_WARN, "CSRF: rejecting %s %s — no Host header to verify against",
                req->method, req->path);

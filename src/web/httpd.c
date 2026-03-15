@@ -190,6 +190,14 @@ static int parse_request(const char *raw, size_t raw_len, http_request_t *req)
                 vlen = sizeof(req->origin) - 1;
             memcpy(req->origin, val, vlen);
             req->origin[vlen] = '\0';
+        } else if (strncasecmp(h, "X-Requested-With:", 17) == 0) {
+            const char *val = h + 17;
+            while (*val == ' ') val++;
+            size_t vlen = (size_t)(nl - val);
+            if (vlen >= sizeof(req->x_requested_with))
+                vlen = sizeof(req->x_requested_with) - 1;
+            memcpy(req->x_requested_with, val, vlen);
+            req->x_requested_with[vlen] = '\0';
         }
         h = nl + 2;
     }
