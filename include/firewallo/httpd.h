@@ -18,6 +18,8 @@ typedef struct {
     char query[HTTP_MAX_QUERY];
     char content_type[128];
     char authorization[AUTH_TOKEN_MAX + 16]; /* "Bearer <token>" */
+    char host[256];
+    char origin[256];
     size_t content_length;
     char *body;
     size_t body_len;
