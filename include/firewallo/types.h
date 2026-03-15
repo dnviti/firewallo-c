@@ -78,6 +78,14 @@ typedef struct {
     char comment[FW_MAX_COMMENT];
 } fw_filter_rule_t;
 
+/* Rate limit configuration for brute-force protection */
+typedef struct {
+    int max_connections;
+    int period_seconds;
+    int ban_seconds;
+    int enabled;
+} fw_rate_limit_t;
+
 /* A filter chain (one of 25) */
 typedef struct {
     char name[16];
@@ -87,6 +95,7 @@ typedef struct {
     int udp_port_count;
     fw_filter_rule_t rules[FW_MAX_RULES];
     int rule_count;
+    fw_rate_limit_t rate_limit;
 } fw_chain_t;
 
 /* NAT postrouting rule (MASQUERADE / SNAT) */

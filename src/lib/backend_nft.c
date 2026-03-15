@@ -319,6 +319,42 @@ static void nft_create_mangle_table(fw_cmdlist_t *out)
     nft_cmd(out, "add chain ip mangle POSTROUTING { type filter hook postrouting priority 150; policy accept; }");
 }
 
+/* ── Rate limiting ─────────────────────────────────────────────────── */
+
+static void nft_add_rate_limit(fw_cmdlist_t *out, const char *chain,
+                                const fw_rate_limit_t *rl)
+{
+    if (!rl || !rl->enabled)
+        return;
+
+    char rule[512];
+
+    /* Create a dynamic set for banned IPs with automatic timeout */
+    snprintf(rule, sizeof(rule),
+             "add set ip filter ratelimit_%s { type ipv4_addr; flags dynamic,timeout; timeout %ds; }",
+             chain, rl->ban_seconds);
+    nft_cmd(out, rule);
+
+    /* Drop packets from IPs already in the ban set */
+    snprintf(rule, sizeof(rule),
+             "add rule ip filter %s ip saddr @ratelimit_%s "
+             "log prefix \\\"RATELIMIT BAN %s : \\\" counter drop",
+             chain, chain, chain);
+    nft_cmd(out, rule);
+
+    /* Add IPs exceeding the rate to the ban set */
+    snprintf(rule, sizeof(rule),
+             "add rule ip filter %s ct state new "
+             "limit rate over %d/%s burst %d packets "
+             "add @ratelimit_%s { ip saddr } "
+             "log prefix \\\"RATELIMIT ADD %s : \\\" counter drop",
+             chain, rl->max_connections,
+             rl->period_seconds <= 1 ? "second" :
+             rl->period_seconds <= 60 ? "minute" : "hour",
+             rl->max_connections, chain, chain);
+    nft_cmd(out, rule);
+}
+
 /* ── Stop / Reset ──────────────────────────────────────────────────── */
 
 static void nft_setup_stop(fw_cmdlist_t *out)
@@ -372,6 +408,7 @@ const fw_backend_ops_t fw_backend_nft = {
     .add_snat             = nft_add_snat,
     .add_dnat             = nft_add_dnat,
     .create_mangle_table  = nft_create_mangle_table,
+    .add_rate_limit       = nft_add_rate_limit,
     .setup_stop           = nft_setup_stop,
     .setup_reset          = nft_setup_reset,
 };

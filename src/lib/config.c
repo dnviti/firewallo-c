@@ -412,6 +412,23 @@ int fw_config_load(const char *path, fw_config_t *cfg, char *err, size_t errlen)
                            cfg->chains[i].udp_ports, &cfg->chains[i].udp_port_count, FW_MAX_PORTS);
             load_filter_rules(json_object_get(chain, "rules"),
                               cfg->chains[i].rules, &cfg->chains[i].rule_count, FW_MAX_RULES);
+
+            /* Rate limit */
+            json_value_t *rl = json_object_get(chain, "rate_limit");
+            if (rl && rl->type == JSON_OBJECT) {
+                json_value_t *v;
+                v = json_object_get(rl, "enabled");
+                if (v) cfg->chains[i].rate_limit.enabled = json_bool_value(v);
+                v = json_object_get(rl, "max");
+                if (v && v->type == JSON_NUMBER)
+                    cfg->chains[i].rate_limit.max_connections = (int)json_number_value(v);
+                v = json_object_get(rl, "period");
+                if (v && v->type == JSON_NUMBER)
+                    cfg->chains[i].rate_limit.period_seconds = (int)json_number_value(v);
+                v = json_object_get(rl, "ban");
+                if (v && v->type == JSON_NUMBER)
+                    cfg->chains[i].rate_limit.ban_seconds = (int)json_number_value(v);
+            }
         }
     }
 
@@ -685,6 +702,15 @@ static json_value_t *config_to_json(const fw_config_t *cfg)
                         build_int_array((int *)ch->udp_ports, ch->udp_port_count));
         json_object_set(chain, "rules",
                         build_filter_rules(ch->rules, ch->rule_count));
+
+        /* Rate limit */
+        json_value_t *rl = json_new_object();
+        json_object_set(rl, "enabled", json_new_bool(ch->rate_limit.enabled));
+        json_object_set(rl, "max", json_new_number(ch->rate_limit.max_connections));
+        json_object_set(rl, "period", json_new_number(ch->rate_limit.period_seconds));
+        json_object_set(rl, "ban", json_new_number(ch->rate_limit.ban_seconds));
+        json_object_set(chain, "rate_limit", rl);
+
         json_object_set(filter, json_chain_keys[i], chain);
     }
     json_object_set(root, "filter", filter);
@@ -874,7 +900,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
         }
     }
 
-    /* Validate ports and filter rules in all chains */
+    /* Validate ports, filter rules, and rate limits in all chains */
     for (int c = 0; c < FW_CHAIN_COUNT; c++) {
         const fw_chain_t *ch = &cfg->chains[c];
         for (int i = 0; i < ch->tcp_port_count; i++) {
@@ -907,6 +933,25 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             if (!fw_validate_comment(r->comment)) {
                 snprintf(err, errlen, "invalid comment in chain %s rule %d",
                          ch->name, i);
+                return -1;
+            }
+        }
+
+        /* Validate rate limit if enabled */
+        if (ch->rate_limit.enabled) {
+            if (ch->rate_limit.max_connections <= 0) {
+                snprintf(err, errlen,
+                         "rate_limit.max must be positive in chain %s", ch->name);
+                return -1;
+            }
+            if (ch->rate_limit.period_seconds <= 0) {
+                snprintf(err, errlen,
+                         "rate_limit.period must be positive in chain %s", ch->name);
+                return -1;
+            }
+            if (ch->rate_limit.ban_seconds <= 0) {
+                snprintf(err, errlen,
+                         "rate_limit.ban must be positive in chain %s", ch->name);
                 return -1;
             }
         }

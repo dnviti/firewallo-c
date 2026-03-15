@@ -300,6 +300,81 @@ static void api_get_filter_chain(httpd_t *srv, const char *chain_name, http_resp
     api_ok_json(resp, data);
 }
 
+/* ── GET /api/v1/filter/{chain}/ratelimit ───────────────────────────── */
+
+static void api_get_ratelimit(httpd_t *srv, const char *chain_name, http_response_t *resp)
+{
+    int idx = fw_config_chain_index(chain_name);
+    if (idx < 0) { api_error(resp, 404, "Chain not found"); return; }
+
+    const fw_rate_limit_t *rl = &srv->config->chains[idx].rate_limit;
+    json_value_t *data = json_new_object();
+    json_object_set(data, "enabled", json_new_bool(rl->enabled));
+    json_object_set(data, "max", json_new_number(rl->max_connections));
+    json_object_set(data, "period", json_new_number(rl->period_seconds));
+    json_object_set(data, "ban", json_new_number(rl->ban_seconds));
+    api_ok_json(resp, data);
+}
+
+/* ── PUT /api/v1/filter/{chain}/ratelimit ──────────────────────────── */
+
+static void api_put_ratelimit(httpd_t *srv, const char *chain_name,
+                               const http_request_t *req, http_response_t *resp)
+{
+    int idx = fw_config_chain_index(chain_name);
+    if (idx < 0) { api_error(resp, 404, "Chain not found"); return; }
+
+    if (!req->body) { api_error(resp, 400, "Empty body"); return; }
+
+    char err[256];
+    json_value_t *body = json_parse(req->body, err, sizeof(err));
+    if (!body) { api_error(resp, 400, "Invalid JSON"); return; }
+
+    fw_rate_limit_t *rl = &srv->config->chains[idx].rate_limit;
+
+    json_value_t *v;
+    v = json_object_get(body, "enabled");
+    if (v) rl->enabled = json_bool_value(v);
+
+    v = json_object_get(body, "max");
+    if (v && v->type == JSON_NUMBER) {
+        int val = (int)json_number_value(v);
+        if (val <= 0 && rl->enabled) {
+            json_free(body);
+            api_error(resp, 400, "max must be positive when enabled");
+            return;
+        }
+        rl->max_connections = val;
+    }
+
+    v = json_object_get(body, "period");
+    if (v && v->type == JSON_NUMBER) {
+        int val = (int)json_number_value(v);
+        if (val <= 0 && rl->enabled) {
+            json_free(body);
+            api_error(resp, 400, "period must be positive when enabled");
+            return;
+        }
+        rl->period_seconds = val;
+    }
+
+    v = json_object_get(body, "ban");
+    if (v && v->type == JSON_NUMBER) {
+        int val = (int)json_number_value(v);
+        if (val <= 0 && rl->enabled) {
+            json_free(body);
+            api_error(resp, 400, "ban must be positive when enabled");
+            return;
+        }
+        rl->ban_seconds = val;
+    }
+
+    json_free(body);
+
+    if (save_config(srv, resp) != 0) return;
+    api_ok_msg(resp, "Rate limit updated");
+}
+
 /* ── POST /api/v1/filter/{chain}/tcp ───────────────────────────────── */
 
 static void api_add_port(httpd_t *srv, const char *chain_name,
@@ -674,6 +749,17 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         chain_name[clen] = '\0';
 
         const char *resource = slash + 1;
+
+        /* GET/PUT /api/v1/filter/{chain}/ratelimit */
+        if (strcmp(resource, "ratelimit") == 0) {
+            if (strcmp(method, "GET") == 0)
+                api_get_ratelimit(srv, chain_name, resp);
+            else if (strcmp(method, "PUT") == 0)
+                api_put_ratelimit(srv, chain_name, req, resp);
+            else
+                api_error(resp, 405, "Method not allowed");
+            return 0;
+        }
 
         /* POST /api/v1/filter/{chain}/tcp */
         if (strcmp(resource, "tcp") == 0 && strcmp(method, "POST") == 0) {

@@ -60,6 +60,10 @@ typedef struct {
     /* Mangle table setup */
     void (*create_mangle_table)(fw_cmdlist_t *out);
 
+    /* Rate limiting */
+    void (*add_rate_limit)(fw_cmdlist_t *out, const char *chain,
+                           const fw_rate_limit_t *rl);
+
     /* Stop/Reset */
     void (*setup_stop)(fw_cmdlist_t *out);
     void (*setup_reset)(fw_cmdlist_t *out);
