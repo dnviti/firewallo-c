@@ -1,6 +1,8 @@
 #include "firewallo/api_common.h"
 #include "firewallo/ifinfo.h"
 #include <string.h>
+#include <stdio.h>
+#include <inttypes.h>
 
 /* ── Convert one fw_ifinfo_t to a JSON object ─────────────────────── */
 
@@ -36,14 +38,21 @@ static json_value_t *ifinfo_to_json(const fw_ifinfo_t *info)
     }
     json_object_set(obj, "addresses", addrs);
 
-    /* Statistics */
+    /* Statistics — serialize as strings to avoid double precision loss >2^53 */
     json_value_t *stats = json_new_object();
-    json_object_set(stats, "rx_bytes",   json_new_number((double)info->stats.rx_bytes));
-    json_object_set(stats, "tx_bytes",   json_new_number((double)info->stats.tx_bytes));
-    json_object_set(stats, "rx_packets", json_new_number((double)info->stats.rx_packets));
-    json_object_set(stats, "tx_packets", json_new_number((double)info->stats.tx_packets));
-    json_object_set(stats, "rx_errors",  json_new_number((double)info->stats.rx_errors));
-    json_object_set(stats, "tx_errors",  json_new_number((double)info->stats.tx_errors));
+    char sbuf[32];
+    snprintf(sbuf, sizeof(sbuf), "%" PRIu64, info->stats.rx_bytes);
+    json_object_set(stats, "rx_bytes",   json_new_string(sbuf));
+    snprintf(sbuf, sizeof(sbuf), "%" PRIu64, info->stats.tx_bytes);
+    json_object_set(stats, "tx_bytes",   json_new_string(sbuf));
+    snprintf(sbuf, sizeof(sbuf), "%" PRIu64, info->stats.rx_packets);
+    json_object_set(stats, "rx_packets", json_new_string(sbuf));
+    snprintf(sbuf, sizeof(sbuf), "%" PRIu64, info->stats.tx_packets);
+    json_object_set(stats, "tx_packets", json_new_string(sbuf));
+    snprintf(sbuf, sizeof(sbuf), "%" PRIu64, info->stats.rx_errors);
+    json_object_set(stats, "rx_errors",  json_new_string(sbuf));
+    snprintf(sbuf, sizeof(sbuf), "%" PRIu64, info->stats.tx_errors);
+    json_object_set(stats, "tx_errors",  json_new_string(sbuf));
     json_object_set(obj, "stats", stats);
 
     return obj;

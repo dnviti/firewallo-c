@@ -8,9 +8,12 @@
 
 void api_error(http_response_t *resp, int status, const char *msg)
 {
-    char *buf = malloc(256);
-    snprintf(buf, 256, "{\"error\":true,\"message\":\"%s\"}", msg);
-    http_response_set_json(resp, status, buf);
+    json_value_t *envelope = json_new_object();
+    json_object_set(envelope, "error", json_new_bool(1));
+    json_object_set(envelope, "message", json_new_string(msg));
+    char *json = json_serialize(envelope, 0);
+    json_free(envelope);
+    http_response_set_json(resp, status, json);
 }
 
 void api_ok_json(http_response_t *resp, json_value_t *data)

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── GET /api/v1/version ──────────────────────────────────────────── */
 
@@ -22,8 +23,16 @@ static void api_version(httpd_t *srv, http_response_t *resp)
 
 static void api_get_config(httpd_t *srv, http_response_t *resp)
 {
-    const char *tmp = "/tmp/.firewallo_api_cfg.json";
+    char tmp[] = "/tmp/firewallo_api_cfg_XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        api_error(resp, 500, "Failed to create temp file");
+        return;
+    }
+    close(fd);
+
     if (fw_config_save(tmp, srv->config) != 0) {
+        remove(tmp);
         api_error(resp, 500, "Serialization failed");
         return;
     }
@@ -52,8 +61,16 @@ static void api_put_config(httpd_t *srv, const http_request_t *req, http_respons
         return;
     }
 
-    const char *tmp = "/tmp/.firewallo_api_put.json";
+    char tmp[] = "/tmp/firewallo_api_put_XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        api_error(resp, 500, "Failed to create temp file");
+        return;
+    }
+    close(fd);
+
     if (fw_write_file(tmp, req->body, req->body_len) != 0) {
+        remove(tmp);
         api_error(resp, 500, "Write failed");
         return;
     }
