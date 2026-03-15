@@ -1,6 +1,8 @@
 #ifndef FIREWALLO_VALIDATE_H
 #define FIREWALLO_VALIDATE_H
 
+#include "firewallo/types.h"
+
 /* All validators return 1 if valid, 0 if invalid */
 
 /* Validate IPv4 address (e.g. "192.168.1.1") */
@@ -44,5 +46,8 @@ int fw_validate_addr_field(const char *addr);
 
 /* Validate mangle mark (hex string like "0x1" or decimal) */
 int fw_validate_mark(const char *mark);
+
+/* Validate a time-based schedule (hour 0-23, minute 0-59, valid day bitmask) */
+int fw_validate_schedule(const fw_schedule_t *sched);
 
 #endif /* FIREWALLO_VALIDATE_H */

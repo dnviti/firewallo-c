@@ -293,6 +293,26 @@ static void api_get_filter_chain(httpd_t *srv, const char *chain_name, http_resp
         json_object_set(obj, "action", json_new_string(
             r->action == ACTION_DROP ? "drop" : r->action == ACTION_REJECT ? "reject" : "accept"));
         json_object_set(obj, "comment", json_new_string(r->comment));
+
+        /* Include schedule if enabled */
+        if (r->schedule.enabled) {
+            json_value_t *sched = json_new_object();
+            json_object_set(sched, "enabled", json_new_bool(1));
+            char tbuf[8];
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d",
+                     r->schedule.hour_start, r->schedule.minute_start);
+            json_object_set(sched, "start", json_new_string(tbuf));
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d",
+                     r->schedule.hour_end, r->schedule.minute_end);
+            json_object_set(sched, "end", json_new_string(tbuf));
+
+            static const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+            char days_str[64];
+            fw_schedule_days_str(r->schedule.days, days_str, sizeof(days_str), day_names, ",");
+            json_object_set(sched, "days", json_new_string(days_str));
+            json_object_set(obj, "schedule", sched);
+        }
+
         json_array_append(rules, obj);
     }
     json_object_set(data, "rules", rules);

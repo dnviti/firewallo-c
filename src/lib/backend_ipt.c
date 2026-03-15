@@ -1,5 +1,6 @@
 #include "firewallo/backend.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/util.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -297,6 +298,22 @@ static void ipt_add_filter_explicit_rule(fw_cmdlist_t *out, const char *chain,
                             " --sport %d", rule->src_port.start);
     }
 
+    /* Schedule constraints */
+    if (rule->schedule.enabled) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                        " -m time --timestart %02d:%02d --timestop %02d:%02d",
+                        rule->schedule.hour_start, rule->schedule.minute_start,
+                        rule->schedule.hour_end, rule->schedule.minute_end);
+
+        /* Build weekdays list */
+        static const char *day_abbr[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+        char days_buf[64];
+        fw_schedule_days_str(rule->schedule.days, days_buf, sizeof(days_buf), day_abbr, ",");
+        if (days_buf[0])
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                            " --weekdays %s", days_buf);
+    }
+
     /* LOG then ACTION (iptables needs two separate rules) */
     const char *comment = rule->comment[0] ? rule->comment : chain;
     fw_cmdlist_append(out, "%s -j LOG --log-level info --log-prefix \"%s :\"", buf, comment);
@@ -324,6 +341,20 @@ static void ipt_add_filter_explicit_rule(fw_cmdlist_t *out, const char *chain,
         else
             pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
                             " --sport %d", rule->src_port.start);
+    }
+    /* Re-add schedule for the action rule too */
+    if (rule->schedule.enabled) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                        " -m time --timestart %02d:%02d --timestop %02d:%02d",
+                        rule->schedule.hour_start, rule->schedule.minute_start,
+                        rule->schedule.hour_end, rule->schedule.minute_end);
+
+        static const char *day_abbr2[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+        char days_buf2[64];
+        fw_schedule_days_str(rule->schedule.days, days_buf2, sizeof(days_buf2), day_abbr2, ",");
+        if (days_buf2[0])
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                            " --weekdays %s", days_buf2);
     }
     fw_cmdlist_append(out, "%s -j %s", buf, act);
 }

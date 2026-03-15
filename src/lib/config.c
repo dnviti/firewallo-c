@@ -170,6 +170,55 @@ static void load_filter_rules(const json_value_t *arr, fw_filter_rule_t out[], i
         s = json_string_value(json_object_get(rule, "comment"));
         if (s) fw_strlcpy(r->comment, s, sizeof(r->comment));
 
+        /* Parse schedule if present */
+        json_value_t *sched = json_object_get(rule, "schedule");
+        if (sched && sched->type == JSON_OBJECT) {
+            json_value_t *en = json_object_get(sched, "enabled");
+            if (en) r->schedule.enabled = json_bool_value(en);
+
+            /* Parse start time "HH:MM" */
+            s = json_string_value(json_object_get(sched, "start"));
+            if (s) {
+                int hh = 0, mm = 0;
+                if (sscanf(s, "%d:%d", &hh, &mm) == 2) {
+                    r->schedule.hour_start = hh;
+                    r->schedule.minute_start = mm;
+                }
+            }
+
+            /* Parse end time "HH:MM" */
+            s = json_string_value(json_object_get(sched, "end"));
+            if (s) {
+                int hh = 0, mm = 0;
+                if (sscanf(s, "%d:%d", &hh, &mm) == 2) {
+                    r->schedule.hour_end = hh;
+                    r->schedule.minute_end = mm;
+                }
+            }
+
+            /* Parse days as comma-separated names */
+            s = json_string_value(json_object_get(sched, "days"));
+            if (s) {
+                r->schedule.days = 0;
+                const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+                /* Work on a copy to tokenize */
+                char days_buf[128];
+                fw_strlcpy(days_buf, s, sizeof(days_buf));
+                char *tok = strtok(days_buf, ",");
+                while (tok) {
+                    /* Trim leading spaces */
+                    while (*tok == ' ') tok++;
+                    for (int d = 0; d < 7; d++) {
+                        if (strncmp(tok, day_names[d], 3) == 0) {
+                            r->schedule.days |= (unsigned char)(1 << d);
+                            break;
+                        }
+                    }
+                    tok = strtok(NULL, ",");
+                }
+            }
+        }
+
         (*count)++;
     }
 }
@@ -577,6 +626,29 @@ static json_value_t *build_filter_rules(const fw_filter_rule_t *rules, int count
         json_object_set(obj, "dst_port", build_port_field(r->dst_port));
         json_object_set(obj, "action", json_new_string(action_to_string(r->action)));
         json_object_set(obj, "comment", json_new_string(r->comment));
+
+        /* Serialize schedule if enabled */
+        if (r->schedule.enabled) {
+            json_value_t *sched = json_new_object();
+            json_object_set(sched, "enabled", json_new_bool(1));
+
+            char time_buf[8];
+            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
+                     r->schedule.hour_start, r->schedule.minute_start);
+            json_object_set(sched, "start", json_new_string(time_buf));
+
+            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
+                     r->schedule.hour_end, r->schedule.minute_end);
+            json_object_set(sched, "end", json_new_string(time_buf));
+
+            /* Build day names string */
+            static const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+            char days_str[64];
+            fw_schedule_days_str(r->schedule.days, days_str, sizeof(days_str), day_names, ",");
+            json_object_set(sched, "days", json_new_string(days_str));
+            json_object_set(obj, "schedule", sched);
+        }
+
         json_array_append(arr, obj);
     }
     return arr;
@@ -936,7 +1008,7 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
                 return -1;
             }
         }
-        /* Validate explicit filter rules (addresses, comments) */
+        /* Validate explicit filter rules (addresses, comments, schedules) */
         for (int i = 0; i < ch->rule_count; i++) {
             const fw_filter_rule_t *r = &ch->rules[i];
             if (!fw_validate_addr_field(r->src_addr)) {
@@ -952,6 +1024,12 @@ int fw_config_validate(const fw_config_t *cfg, char *err, size_t errlen)
             if (!fw_validate_comment(r->comment)) {
                 snprintf(err, errlen, "invalid comment in chain %s rule %d",
                          ch->name, i);
+                return -1;
+            }
+            if (r->schedule.enabled &&
+                !fw_validate_schedule(&r->schedule)) {
+                snprintf(err, errlen, "invalid schedule on rule %d in chain %s",
+                         i, ch->name);
                 return -1;
             }
         }

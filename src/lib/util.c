@@ -123,3 +123,34 @@ int fw_str_empty(const char *s)
 {
     return s == NULL || s[0] == '\0';
 }
+
+size_t fw_schedule_days_str(unsigned char days, char *buf, size_t len,
+                            const char *names[], const char *sep)
+{
+    if (len == 0) return 0;
+    buf[0] = '\0';
+
+    size_t pos = 0;
+    size_t sep_len = strlen(sep);
+    int first = 1;
+
+    for (int d = 0; d < 7; d++) {
+        if (!(days & (1 << d))) continue;
+
+        size_t name_len = strlen(names[d]);
+
+        if (!first) {
+            if (pos + sep_len >= len) break;
+            memcpy(buf + pos, sep, sep_len);
+            pos += sep_len;
+        }
+
+        if (pos + name_len >= len) break;
+        memcpy(buf + pos, names[d], name_len);
+        pos += name_len;
+        first = 0;
+    }
+
+    buf[pos] = '\0';
+    return pos;
+}
