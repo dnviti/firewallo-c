@@ -15,10 +15,39 @@
 static void api_error(http_response_t *resp, int status, const char *msg)
 {
     json_value_t *envelope = json_new_object();
-    json_object_set(envelope, "error", json_new_bool(1));
-    json_object_set(envelope, "message", json_new_string(msg));
-    char *json = json_serialize(envelope, 0);
+    if (!envelope) {
+        http_response_set_json(resp, status,
+            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        return;
+    }
+
+    json_value_t *err_val = json_new_bool(1);
+    json_value_t *msg_val = json_new_string(msg);
+
+    if (json_object_set(envelope, "error", err_val) != 0) {
+        json_free(err_val);
+        json_free(msg_val);
+        json_free(envelope);
+        http_response_set_json(resp, status,
+            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        return;
+    }
+    if (json_object_set(envelope, "message", msg_val) != 0) {
+        json_free(msg_val);
+        json_free(envelope);
+        http_response_set_json(resp, status,
+            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        return;
+    }
+
+    char *json = json_serialize(envelope, 1);
     json_free(envelope);
+
+    if (!json) {
+        http_response_set_json(resp, status,
+            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        return;
+    }
     http_response_set_json(resp, status, json);
 }
 
