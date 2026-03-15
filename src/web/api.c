@@ -616,6 +616,11 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         return 0;
     }
 
+    /* Backup/snapshot endpoints: /api/v1/config/snapshots... */
+    if (strncmp(path, "config/snapshots", 16) == 0) {
+        return api_handle_backup(srv, req, resp);
+    }
+
     /* GET/PUT /api/v1/config */
     if (strcmp(path, "config") == 0) {
         if (strcmp(method, "GET") == 0) api_get_config(srv, resp);
