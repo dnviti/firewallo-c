@@ -30,5 +30,6 @@ int cmd_set_chain(fw_config_t *cfg, const char *chain, const char *proto,
 int cmd_set_nat(fw_config_t *cfg, const char *direction, const char *action,
                 const char *rule_json, const char *config_path);
 int cmd_reload(fw_config_t *cfg, const char *config_path, int verbose);
+int cmd_preview(fw_config_t *cfg, const char *config_path);
 
 #endif /* FIREWALLO_CLI_COMMANDS_H */

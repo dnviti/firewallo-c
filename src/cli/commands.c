@@ -7,6 +7,7 @@
 #include "firewallo/json.h"
 #include "firewallo/validate.h"
 #include "firewallo/util.h"
+#include "firewallo/diff.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -813,6 +814,75 @@ int cmd_set_nat(fw_config_t *cfg, const char *direction, const char *action,
 
     printf("NAT %srouting rule %s\n", direction,
            strcmp(action, "add") == 0 ? "added" : "removed");
+    return 0;
+}
+
+/* ── Preview ───────────────────────────────────────────────────────── */
+
+int cmd_preview(fw_config_t *cfg, const char *config_path)
+{
+    char err[256] = {0};
+    if (fw_config_validate(cfg, err, sizeof(err)) != 0) {
+        print_err(_("config_invalid"), err);
+        return 1;
+    }
+
+    /* Compile proposed ruleset */
+    fw_cmdlist_t cmds;
+    fw_compile_start(cfg, &cmds);
+
+    printf("=== Proposed ruleset (%d commands) ===\n\n", cmds.count);
+
+    /* Heap-allocate large buffers to avoid ~450KB stack usage */
+    enum { DUMP_SIZE = 131072, DIFF_SIZE = 131072 };
+
+    char *dump = malloc(DUMP_SIZE);
+    if (dump) {
+        if (fw_cmdlist_dump(&cmds, dump, DUMP_SIZE) >= 0)
+            printf("%s", dump);
+    }
+
+    /* Compare two compiled command lists: load saved (on-disk) config,
+       compile it, and diff its dump against the proposed dump.
+       This ensures both sides use the same format for a meaningful diff. */
+    fw_config_t saved_cfg;
+    char load_err[256];
+    if (config_path &&
+        fw_config_load(config_path, &saved_cfg, load_err,
+                       sizeof(load_err)) == 0) {
+        fw_cmdlist_t saved_cmds;
+        fw_compile_start(&saved_cfg, &saved_cmds);
+
+        char *saved_dump = malloc(DUMP_SIZE);
+        char *proposed_dump = dump ? NULL : malloc(DUMP_SIZE);
+        /* Reuse dump if already allocated, otherwise allocate proposed_dump */
+        char *proposed_text = dump ? dump : proposed_dump;
+        if (saved_dump && proposed_text) {
+            fw_cmdlist_dump(&saved_cmds, saved_dump, DUMP_SIZE);
+            if (!dump) {
+                fw_cmdlist_dump(&cmds, proposed_text, DUMP_SIZE);
+            }
+
+            char *diff = malloc(DIFF_SIZE);
+            if (diff) {
+                diff[0] = '\0';
+                if (fw_ruleset_diff(saved_dump, proposed_text,
+                                    diff, DIFF_SIZE) == 0 && diff[0]) {
+                    printf("\n=== Diff (saved vs proposed) ===\n\n");
+                    printf("%s", diff);
+                }
+                free(diff);
+            }
+        }
+        free(saved_dump);
+        free(proposed_dump);
+        fw_cmdlist_free(&saved_cmds);
+    } else {
+        printf("\n(Could not load saved config — diff not available)\n");
+    }
+
+    free(dump);
+    fw_cmdlist_free(&cmds);
     return 0;
 }
 

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 
 int fw_sysctl_set(const char *path, int value)
 {
@@ -59,5 +60,8 @@ int fw_exec_capture(const char *cmd, char *buf, size_t buflen)
     }
     buf[total] = '\0';
 
-    return pclose(p);
+    int status = pclose(p);
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    return -1;
 }
