@@ -13,7 +13,7 @@
  *     chain <name> {
  * and within chains for "counter packets <N> bytes <N>".
  */
-static int parse_nft_counters(const char *output, fw_counter_data_t *data)
+int fw_parse_nft_counters(const char *output, fw_counter_data_t *data)
 {
     const char *p = output;
     char current_chain[16] = {0};
@@ -83,7 +83,7 @@ static int parse_nft_counters(const char *output, fw_counter_data_t *data)
  *       pkts      bytes target ...
  *      <pkts>   <bytes> ...
  */
-static int parse_ipt_counters(const char *output, fw_counter_data_t *data)
+int fw_parse_ipt_counters(const char *output, fw_counter_data_t *data)
 {
     const char *p = output;
     char current_chain[16] = {0};
@@ -92,7 +92,6 @@ static int parse_ipt_counters(const char *output, fw_counter_data_t *data)
 
     while (*p) {
         /* Skip leading whitespace */
-        const char *line_start = p;
         while (*p == ' ' || *p == '\t') p++;
 
         /* Detect "Chain <name>" */
@@ -152,7 +151,6 @@ static int parse_ipt_counters(const char *output, fw_counter_data_t *data)
         }
 
         /* Advance to next line */
-        (void)line_start;
         const char *nl = strchr(p, '\n');
         if (!nl) break;
         p = nl + 1;
@@ -176,11 +174,13 @@ int fw_counters_collect(fw_backend_t backend, fw_counter_data_t *data)
 
     int ret;
     if (backend == BACKEND_NFT) {
-        fw_exec_capture("/usr/sbin/nft list ruleset 2>/dev/null", buf, 262144);
-        ret = parse_nft_counters(buf, data);
+        ret = fw_exec_capture("/usr/sbin/nft list ruleset 2>/dev/null", buf, 262144);
+        if (ret != 0) { free(buf); return -1; }
+        ret = fw_parse_nft_counters(buf, data);
     } else {
-        fw_exec_capture("/sbin/iptables -L -v -n -x 2>/dev/null", buf, 262144);
-        ret = parse_ipt_counters(buf, data);
+        ret = fw_exec_capture("/sbin/iptables -L -v -n -x 2>/dev/null", buf, 262144);
+        if (ret != 0) { free(buf); return -1; }
+        ret = fw_parse_ipt_counters(buf, data);
     }
 
     free(buf);

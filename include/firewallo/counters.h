@@ -5,8 +5,8 @@
 #include <stdint.h>
 #include <time.h>
 
-/* Maximum counters: FW_CHAIN_COUNT * FW_MAX_RULES should fit */
-#define FW_MAX_COUNTERS 512
+/* Maximum counters: FW_CHAIN_COUNT * FW_MAX_RULES = 25 * 256 = 6400 */
+#define FW_MAX_COUNTERS (FW_CHAIN_COUNT * FW_MAX_RULES)
 
 /* Per-rule counter entry */
 typedef struct {
@@ -22,6 +22,14 @@ typedef struct {
     int count;
     time_t collected_at;
 } fw_counter_data_t;
+
+/* Parse nftables ruleset output into counter data.
+   Returns 0 on success. */
+int fw_parse_nft_counters(const char *output, fw_counter_data_t *data);
+
+/* Parse iptables -L -v -n -x output into counter data.
+   Returns 0 on success. */
+int fw_parse_ipt_counters(const char *output, fw_counter_data_t *data);
 
 /* Collect counters from the active firewall backend.
    Returns 0 on success, -1 on error. */

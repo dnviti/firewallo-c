@@ -1,7 +1,9 @@
 #include "firewallo/api.h"
+#include "firewallo/config.h"
 #include "firewallo/counters.h"
 #include "firewallo/json.h"
 #include "firewallo/util.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +35,14 @@ static void mon_ok_msg(http_response_t *resp, const char *msg)
     mon_ok_json(resp, data);
 }
 
+/* Format uint64_t as string to avoid double precision loss */
+static json_value_t *u64_to_json_string(uint64_t val)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%" PRIu64, val);
+    return json_new_string(buf);
+}
+
 /* Build JSON array from counter data */
 static json_value_t *counters_to_json(const fw_counter_data_t *data)
 {
@@ -42,8 +52,8 @@ static json_value_t *counters_to_json(const fw_counter_data_t *data)
         json_value_t *obj = json_new_object();
         json_object_set(obj, "chain", json_new_string(rc->chain));
         json_object_set(obj, "rule_index", json_new_number(rc->rule_index));
-        json_object_set(obj, "packets", json_new_number((double)rc->packets));
-        json_object_set(obj, "bytes", json_new_number((double)rc->bytes));
+        json_object_set(obj, "packets", u64_to_json_string(rc->packets));
+        json_object_set(obj, "bytes", u64_to_json_string(rc->bytes));
         json_array_append(arr, obj);
     }
     return arr;
@@ -69,6 +79,12 @@ static void api_monitor_counters(httpd_t *srv, http_response_t *resp)
 
 static void api_monitor_chain_counters(httpd_t *srv, const char *chain, http_response_t *resp)
 {
+    /* Validate chain name against known chains */
+    if (fw_config_chain_index(chain) < 0) {
+        mon_error(resp, 404, "Unknown chain name");
+        return;
+    }
+
     fw_counter_data_t data;
     if (fw_counters_collect(srv->config->backend, &data) != 0) {
         mon_error(resp, 500, "Failed to collect counters");
@@ -85,8 +101,8 @@ static void api_monitor_chain_counters(httpd_t *srv, const char *chain, http_res
             const fw_rule_counter_t *rc = &data.rules[i];
             json_value_t *obj = json_new_object();
             json_object_set(obj, "rule_index", json_new_number(rc->rule_index));
-            json_object_set(obj, "packets", json_new_number((double)rc->packets));
-            json_object_set(obj, "bytes", json_new_number((double)rc->bytes));
+            json_object_set(obj, "packets", u64_to_json_string(rc->packets));
+            json_object_set(obj, "bytes", u64_to_json_string(rc->bytes));
             json_array_append(arr, obj);
         }
     }
@@ -129,9 +145,12 @@ static void api_monitor_top_rules(httpd_t *srv, const http_request_t *req, http_
     if (req->query[0]) {
         const char *lp = strstr(req->query, "limit=");
         if (lp) {
-            int val = atoi(lp + 6);
-            if (val > 0 && val <= FW_MAX_COUNTERS)
-                limit = val;
+            char *endptr;
+            errno = 0;
+            long val = strtol(lp + 6, &endptr, 10);
+            if (endptr != lp + 6 && errno == 0 &&
+                val > 0 && val <= FW_MAX_COUNTERS)
+                limit = (int)val;
         }
     }
 
@@ -149,8 +168,8 @@ static void api_monitor_top_rules(httpd_t *srv, const http_request_t *req, http_
         json_value_t *obj = json_new_object();
         json_object_set(obj, "chain", json_new_string(rc->chain));
         json_object_set(obj, "rule_index", json_new_number(rc->rule_index));
-        json_object_set(obj, "packets", json_new_number((double)rc->packets));
-        json_object_set(obj, "bytes", json_new_number((double)rc->bytes));
+        json_object_set(obj, "packets", u64_to_json_string(rc->packets));
+        json_object_set(obj, "bytes", u64_to_json_string(rc->bytes));
         json_array_append(arr, obj);
     }
     json_object_set(result, "top_rules", arr);
@@ -178,7 +197,8 @@ static void api_monitor_zero_hit(httpd_t *srv, http_response_t *resp)
             json_value_t *obj = json_new_object();
             json_object_set(obj, "chain", json_new_string(rc->chain));
             json_object_set(obj, "rule_index", json_new_number(rc->rule_index));
-            json_object_set(obj, "bytes", json_new_number((double)rc->bytes));
+            json_object_set(obj, "packets", u64_to_json_string(rc->packets));
+            json_object_set(obj, "bytes", u64_to_json_string(rc->bytes));
             json_array_append(arr, obj);
             zero_count++;
         }
