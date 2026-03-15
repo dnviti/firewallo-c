@@ -2,6 +2,7 @@
 #include "firewallo/config.h"
 #include "firewallo/json.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/rollback.h"
 #include "firewallo/sysctl.h"
 #include "firewallo/validate.h"
 #include "firewallo/util.h"
@@ -11,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
@@ -531,12 +533,38 @@ static void api_get_nat(httpd_t *srv, http_response_t *resp)
 
 /* ── POST /api/v1/firewall/{action} ───────────────────────────────── */
 
-static void api_firewall_action(httpd_t *srv, const char *action, http_response_t *resp)
+static void api_firewall_action(httpd_t *srv, const char *action,
+                                 const http_request_t *req, http_response_t *resp)
 {
+    /* Check for optional rollback_timeout in request body */
+    int rollback_timeout = 0;
+    if (req->body && req->body_len > 0) {
+        char perr[256];
+        json_value_t *body = json_parse(req->body, perr, sizeof(perr));
+        if (body) {
+            json_value_t *tv = json_object_get(body, "rollback_timeout");
+            if (tv && tv->type == JSON_NUMBER)
+                rollback_timeout = (int)json_number_value(tv);
+            json_free(body);
+        }
+    }
+
+    /* Set up rollback for start/restart if requested (comment 2) */
+    int use_rollback = (rollback_timeout > 0 &&
+                        (strcmp(action, "start") == 0 || strcmp(action, "restart") == 0));
+    if (use_rollback) {
+        fw_rollback_set_context(srv->config, srv->config_path);
+        if (fw_rollback_start(rollback_timeout) != 0) {
+            api_error(resp, 500, "Failed to start rollback timer");
+            return;
+        }
+    }
+
     fw_cmdlist_t cmds;
     if (strcmp(action, "start") == 0) {
         char err[256];
         if (fw_config_validate(srv->config, err, sizeof(err)) != 0) {
+            if (use_rollback) fw_rollback_cancel();
             api_error(resp, 400, err);
             return;
         }
@@ -565,14 +593,23 @@ static void api_firewall_action(httpd_t *srv, const char *action, http_response_
     fw_cmdlist_free(&cmds);
 
     if (ret != 0) {
+        if (use_rollback) {
+            fw_rollback_perform();
+        }
         char msg[128];
         snprintf(msg, sizeof(msg), "Command failed at index %d", fail_idx);
         api_error(resp, 500, msg);
         return;
     }
 
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Firewall %s completed", action);
+    char msg[128];
+    if (use_rollback) {
+        snprintf(msg, sizeof(msg),
+                 "Firewall %s completed, confirm within %d seconds",
+                 action, rollback_timeout);
+    } else {
+        snprintf(msg, sizeof(msg), "Firewall %s completed", action);
+    }
     api_ok_msg(resp, msg);
 }
 
@@ -712,6 +749,41 @@ static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
     free(dump);
     free(diff_buf);
     fw_cmdlist_free(&cmds);
+
+    api_ok_json(resp, data);
+}
+
+/* ── POST /api/v1/firewall/confirm ─────────────────────────────────── */
+
+static void api_firewall_confirm(http_response_t *resp)
+{
+    if (fw_rollback_confirm() != 0) {
+        api_error(resp, 400, "No pending rollback to confirm");
+        return;
+    }
+    api_ok_msg(resp, "Configuration confirmed, rollback timer cancelled");
+}
+
+/* ── GET /api/v1/firewall/rollback-status ──────────────────────────── */
+
+static void api_firewall_rollback_status(http_response_t *resp)
+{
+    fw_rollback_state_t state;
+    fw_rollback_status(&state);
+
+    json_value_t *data = json_new_object();
+    json_object_set(data, "pending", json_new_bool(state.pending));
+
+    if (state.pending) {
+        time_t now = time(NULL);
+        int remaining = (int)(state.deadline - now);
+        if (remaining < 0) remaining = 0;
+        json_object_set(data, "remaining_seconds", json_new_number(remaining));
+        json_object_set(data, "deadline", json_new_number((double)state.deadline));
+    } else {
+        json_object_set(data, "remaining_seconds", json_new_number(0));
+        json_object_set(data, "deadline", json_new_number(0));
+    }
 
     api_ok_json(resp, data);
 }
@@ -867,11 +939,19 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
             api_firewall_preview(srv, resp);
             return 0;
         }
+        if (strcmp(sub, "confirm") == 0 && strcmp(method, "POST") == 0) {
+            api_firewall_confirm(resp);
+            return 0;
+        }
+        if (strcmp(sub, "rollback-status") == 0 && strcmp(method, "GET") == 0) {
+            api_firewall_rollback_status(resp);
+            return 0;
+        }
         if (strcmp(method, "POST") == 0) {
             /* sub is start/stop/restart/reset */
             char action[16];
             fw_strlcpy(action, sub, sizeof(action));
-            api_firewall_action(srv, action, resp);
+            api_firewall_action(srv, action, req, resp);
             return 0;
         }
     }
