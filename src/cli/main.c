@@ -144,7 +144,7 @@ int main(int argc, char *argv[])
     else if (strcmp(command, "rules") == 0)
         ret = cmd_rules(&cfg);
     else if (strcmp(command, "preview") == 0)
-        ret = cmd_preview(&cfg);
+        ret = cmd_preview(&cfg, config_path);
     else if (strcmp(command, "validate") == 0)
         ret = cmd_validate(&cfg);
     else if (strcmp(command, "show-config") == 0)

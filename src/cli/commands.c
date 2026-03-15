@@ -819,7 +819,7 @@ int cmd_set_nat(fw_config_t *cfg, const char *direction, const char *action,
 
 /* ── Preview ───────────────────────────────────────────────────────── */
 
-int cmd_preview(fw_config_t *cfg)
+int cmd_preview(fw_config_t *cfg, const char *config_path)
 {
     char err[256] = {0};
     if (fw_config_validate(cfg, err, sizeof(err)) != 0) {
@@ -834,59 +834,54 @@ int cmd_preview(fw_config_t *cfg)
     printf("=== Proposed ruleset (%d commands) ===\n\n", cmds.count);
 
     /* Heap-allocate large buffers to avoid ~450KB stack usage */
-    enum { DUMP_SIZE = 131072, CURRENT_SIZE = 65536, DIFF_SIZE = 131072 };
+    enum { DUMP_SIZE = 131072, DIFF_SIZE = 131072 };
 
     char *dump = malloc(DUMP_SIZE);
     if (dump) {
         if (fw_cmdlist_dump(&cmds, dump, DUMP_SIZE) >= 0)
             printf("%s", dump);
-        free(dump);
     }
 
-    /* Capture current ruleset and show diff */
-    char *current = calloc(1, CURRENT_SIZE);
-    if (!current) {
-        fw_cmdlist_free(&cmds);
-        return 1;
-    }
-    fw_ruleset_current(cfg, current, CURRENT_SIZE);
+    /* Compare two compiled command lists: load saved (on-disk) config,
+       compile it, and diff its dump against the proposed dump.
+       This ensures both sides use the same format for a meaningful diff. */
+    fw_config_t saved_cfg;
+    char load_err[256];
+    if (config_path &&
+        fw_config_load(config_path, &saved_cfg, load_err,
+                       sizeof(load_err)) == 0) {
+        fw_cmdlist_t saved_cmds;
+        fw_compile_start(&saved_cfg, &saved_cmds);
 
-    if (current[0]) {
-        /* Build proposed text: strip backend prefix for normalized comparison */
-        const char *ipt_prefix = "/sbin/iptables ";
-        const char *nft_prefix = "/usr/sbin/nft ";
-        const char *strip = (cfg->backend == BACKEND_IPT)
-                            ? ipt_prefix : nft_prefix;
-        size_t strip_len = strlen(strip);
-
-        char *proposed = calloc(1, DUMP_SIZE);
-        if (proposed) {
-            size_t poff = 0;
-            for (int i = 0; i < cmds.count; i++) {
-                const char *cmd = cmds.cmds[i].command;
-                if (strncmp(cmd, strip, strip_len) == 0)
-                    cmd += strip_len;
-                int n = snprintf(proposed + poff, DUMP_SIZE - poff,
-                                 "%s\n", cmd);
-                if (n > 0 && (size_t)n < DUMP_SIZE - poff)
-                    poff += (size_t)n;
+        char *saved_dump = malloc(DUMP_SIZE);
+        char *proposed_dump = dump ? NULL : malloc(DUMP_SIZE);
+        /* Reuse dump if already allocated, otherwise allocate proposed_dump */
+        char *proposed_text = dump ? dump : proposed_dump;
+        if (saved_dump && proposed_text) {
+            fw_cmdlist_dump(&saved_cmds, saved_dump, DUMP_SIZE);
+            if (!dump) {
+                fw_cmdlist_dump(&cmds, proposed_text, DUMP_SIZE);
             }
 
-            char *diff = calloc(1, DIFF_SIZE);
+            char *diff = malloc(DIFF_SIZE);
             if (diff) {
-                if (fw_ruleset_diff(current, proposed, diff, DIFF_SIZE) == 0 && diff[0]) {
-                    printf("\n=== Diff (current vs proposed) ===\n\n");
+                diff[0] = '\0';
+                if (fw_ruleset_diff(saved_dump, proposed_text,
+                                    diff, DIFF_SIZE) == 0 && diff[0]) {
+                    printf("\n=== Diff (saved vs proposed) ===\n\n");
                     printf("%s", diff);
                 }
                 free(diff);
             }
-            free(proposed);
         }
+        free(saved_dump);
+        free(proposed_dump);
+        fw_cmdlist_free(&saved_cmds);
     } else {
-        printf("\n(No active ruleset detected — diff not available)\n");
+        printf("\n(Could not load saved config — diff not available)\n");
     }
 
-    free(current);
+    free(dump);
     fw_cmdlist_free(&cmds);
     return 0;
 }

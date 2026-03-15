@@ -521,42 +521,34 @@ static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
         fw_cmdlist_dump(&cmds, dump, 131072);
     }
 
-    /* Capture current ruleset (iptables -S or nft list ruleset) */
-    char current[65536] = {0};
-    fw_ruleset_current(srv->config, current, sizeof(current));
-
-    /* Compute diff using normalized command representations.
-       For iptables: strip "/sbin/iptables " prefix to match iptables -S output.
-       For nft: strip "/usr/sbin/nft " prefix for a cleaner comparison. */
+    /* Compare two compiled command lists: load saved (on-disk) config,
+       compile it, and diff its dump against the proposed dump.
+       This ensures both sides use the same format for a meaningful diff. */
     char *diff_buf = NULL;
-    if (current[0]) {
-        const char *ipt_prefix = "/sbin/iptables ";
-        const char *nft_prefix = "/usr/sbin/nft ";
-        const char *strip = (srv->config->backend == BACKEND_IPT)
-                            ? ipt_prefix : nft_prefix;
-        size_t strip_len = strlen(strip);
+    {
+        fw_config_t saved_cfg;
+        char load_err[256];
+        if (fw_config_load(srv->config_path, &saved_cfg, load_err,
+                           sizeof(load_err)) == 0) {
+            fw_cmdlist_t saved_cmds;
+            fw_compile_start(&saved_cfg, &saved_cmds);
 
-        char *proposed = malloc(131072);
-        if (proposed) {
-            size_t poff = 0;
-            proposed[0] = '\0';
-            for (int i = 0; i < cmds.count; i++) {
-                const char *cmd = cmds.cmds[i].command;
-                /* Strip backend command prefix for normalized comparison */
-                if (strncmp(cmd, strip, strip_len) == 0)
-                    cmd += strip_len;
-                int n = snprintf(proposed + poff, 131072 - poff,
-                                 "%s\n", cmd);
-                if (n > 0 && (size_t)n < 131072 - poff)
-                    poff += (size_t)n;
-            }
+            char *saved_dump = malloc(131072);
+            char *proposed_dump = malloc(131072);
+            if (saved_dump && proposed_dump) {
+                fw_cmdlist_dump(&saved_cmds, saved_dump, 131072);
+                fw_cmdlist_dump(&cmds, proposed_dump, 131072);
 
-            diff_buf = malloc(131072);
-            if (diff_buf) {
-                diff_buf[0] = '\0';
-                fw_ruleset_diff(current, proposed, diff_buf, 131072);
+                diff_buf = malloc(131072);
+                if (diff_buf) {
+                    diff_buf[0] = '\0';
+                    fw_ruleset_diff(saved_dump, proposed_dump,
+                                    diff_buf, 131072);
+                }
             }
-            free(proposed);
+            free(saved_dump);
+            free(proposed_dump);
+            fw_cmdlist_free(&saved_cmds);
         }
     }
 
