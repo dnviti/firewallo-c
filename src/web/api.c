@@ -575,7 +575,11 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         if ((port_str = path_after(resource, "tcp/")) != NULL && strcmp(method, "DELETE") == 0) {
             char *endptr;
             long port_val = strtol(port_str, &endptr, 10);
-            if (*endptr != '\0' || endptr == port_str || !fw_validate_port((int)port_val)) {
+            if (*endptr != '\0' || endptr == port_str) {
+                api_error(resp, 400, "Invalid port number");
+                return 0;
+            }
+            if (!fw_validate_port((int)port_val)) {
                 api_error(resp, 400, "Invalid port (1-65535)");
                 return 0;
             }
@@ -585,7 +589,11 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         if ((port_str = path_after(resource, "udp/")) != NULL && strcmp(method, "DELETE") == 0) {
             char *endptr;
             long port_val = strtol(port_str, &endptr, 10);
-            if (*endptr != '\0' || endptr == port_str || !fw_validate_port((int)port_val)) {
+            if (*endptr != '\0' || endptr == port_str) {
+                api_error(resp, 400, "Invalid port number");
+                return 0;
+            }
+            if (!fw_validate_port((int)port_val)) {
                 api_error(resp, 400, "Invalid port (1-65535)");
                 return 0;
             }
