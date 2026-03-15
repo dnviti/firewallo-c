@@ -559,6 +559,78 @@ static void test_validate_nat_comment(void)
     cfg.nat_post_count--;
 }
 
+static void test_alias_roundtrip(void)
+{
+    printf("test_alias_roundtrip\n");
+    fw_config_t cfg1, cfg2;
+    char err[256] = {0};
+
+    int ret = fw_config_load("tests/fixtures/with_aliases.json", &cfg1, err, sizeof(err));
+    if (ret != 0) {
+        printf("  Load error: %s\n", err);
+    }
+    ASSERT(ret == 0, "load config with aliases");
+
+    /* Verify aliases loaded correctly */
+    ASSERT(cfg1.alias_count == 2, "2 aliases loaded");
+    ASSERT(strcmp(cfg1.aliases[0].name, "web_servers") == 0, "alias 0 name");
+    ASSERT(cfg1.aliases[0].type == 0 /* ALIAS_TYPE_IP */, "alias 0 type is IP");
+    ASSERT(cfg1.aliases[0].entry_count == 3, "alias 0 has 3 entries");
+    ASSERT(strcmp(cfg1.aliases[0].entries[0], "192.168.1.10") == 0, "alias 0 entry 0");
+    ASSERT(strcmp(cfg1.aliases[0].entries[1], "192.168.1.11") == 0, "alias 0 entry 1");
+    ASSERT(strcmp(cfg1.aliases[0].entries[2], "192.168.1.12") == 0, "alias 0 entry 2");
+    ASSERT(strcmp(cfg1.aliases[0].comment, "Web server pool") == 0, "alias 0 comment");
+
+    ASSERT(strcmp(cfg1.aliases[1].name, "web_ports") == 0, "alias 1 name");
+    ASSERT(cfg1.aliases[1].type == 1 /* ALIAS_TYPE_PORT */, "alias 1 type is PORT");
+    ASSERT(cfg1.aliases[1].entry_count == 3, "alias 1 has 3 entries");
+    ASSERT(strcmp(cfg1.aliases[1].entries[0], "80") == 0, "alias 1 entry 0");
+    ASSERT(strcmp(cfg1.aliases[1].entries[1], "443") == 0, "alias 1 entry 1");
+    ASSERT(strcmp(cfg1.aliases[1].entries[2], "8080") == 0, "alias 1 entry 2");
+
+    /* Verify alias reference in filter rule */
+    int idx = fw_config_chain_index("lan2fw");
+    ASSERT(idx >= 0, "lan2fw found");
+    ASSERT(cfg1.chains[idx].rule_count == 1, "lan2fw has 1 rule");
+    ASSERT(strcmp(cfg1.chains[idx].rules[0].src_addr, "$web_servers") == 0,
+           "rule src_addr is alias ref");
+
+    /* Validate the config */
+    ret = fw_config_validate(&cfg1, err, sizeof(err));
+    ASSERT(ret == 0, "config with aliases validates");
+
+    /* Save and reload */
+    const char *tmpfile = "/tmp/firewallo_test_alias_roundtrip.json";
+    ret = fw_config_save(tmpfile, &cfg1);
+    ASSERT(ret == 0, "save config with aliases");
+
+    ret = fw_config_load(tmpfile, &cfg2, err, sizeof(err));
+    ASSERT(ret == 0, "reload config with aliases");
+
+    /* Compare aliases after round-trip */
+    ASSERT(cfg2.alias_count == cfg1.alias_count, "alias_count matches after roundtrip");
+    for (int i = 0; i < cfg1.alias_count; i++) {
+        ASSERT(strcmp(cfg2.aliases[i].name, cfg1.aliases[i].name) == 0,
+               "alias name matches after roundtrip");
+        ASSERT(cfg2.aliases[i].type == cfg1.aliases[i].type,
+               "alias type matches after roundtrip");
+        ASSERT(cfg2.aliases[i].entry_count == cfg1.aliases[i].entry_count,
+               "alias entry_count matches after roundtrip");
+        for (int e = 0; e < cfg1.aliases[i].entry_count; e++) {
+            ASSERT(strcmp(cfg2.aliases[i].entries[e], cfg1.aliases[i].entries[e]) == 0,
+                   "alias entry matches after roundtrip");
+        }
+        ASSERT(strcmp(cfg2.aliases[i].comment, cfg1.aliases[i].comment) == 0,
+               "alias comment matches after roundtrip");
+    }
+
+    /* Verify filter rule alias reference survives round-trip */
+    ASSERT(strcmp(cfg2.chains[idx].rules[0].src_addr, "$web_servers") == 0,
+           "alias ref survives roundtrip");
+
+    remove(tmpfile);
+}
+
 int main(void)
 {
     printf("=== Config Tests ===\n\n");
@@ -580,6 +652,7 @@ int main(void)
     test_validate_filter_rule_fields();
     test_validate_mangle_mark();
     test_validate_nat_comment();
+    test_alias_roundtrip();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

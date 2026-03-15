@@ -29,6 +29,9 @@ int fw_validate_port(int port);
 /* Validate port range string (e.g. "1024" or "1024:2000" or "any") */
 int fw_validate_port_range(const char *range);
 
+/* Validate single numeric port string (e.g. "80", "443"). Rejects "any" and ranges. */
+int fw_validate_port_single(const char *port_str);
+
 /* Validate network interface name (e.g. "eth0", "ens18", "wg0") */
 int fw_validate_interface(const char *ifname);
 

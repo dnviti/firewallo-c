@@ -1,4 +1,5 @@
 #include "firewallo/validate.h"
+#include "firewallo/alias.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -258,6 +259,21 @@ int fw_validate_port_range(const char *range)
     return fw_validate_port(port);
 }
 
+int fw_validate_port_single(const char *port_str)
+{
+    if (!port_str || !*port_str)
+        return 0;
+
+    /* Must be all digits */
+    for (const char *p = port_str; *p; p++) {
+        if (!isdigit((unsigned char)*p))
+            return 0;
+    }
+
+    int port = atoi(port_str);
+    return fw_validate_port(port);
+}
+
 int fw_validate_interface(const char *ifname)
 {
     if (!ifname || !*ifname)
@@ -319,6 +335,9 @@ int fw_validate_addr_field(const char *addr)
     if (fw_validate_ipv4(addr))
         return 1;
     if (fw_validate_ipv4_cidr(addr))
+        return 1;
+    /* Accept $alias references — actual resolution is checked separately */
+    if (fw_alias_is_ref(addr))
         return 1;
     return 0;
 }
