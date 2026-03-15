@@ -4,9 +4,9 @@
 #include <stddef.h>
 #include "firewallo/types.h"
 
-/* Capture the current active ruleset into buf.
-   Uses "nft list ruleset" for nft or "iptables-save" for ipt.
-   Returns 0 on success. */
+/* Capture the current active ruleset into buf in command-like format.
+   Uses "nft list ruleset" for nft or "iptables -S" for ipt.
+   Returns 0 on success (normalized via WEXITSTATUS), or -1 on failure. */
 int fw_ruleset_current(const fw_config_t *cfg, char *buf, size_t len);
 
 /* Compute a line-by-line diff between current and proposed rulesets.

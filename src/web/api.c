@@ -504,8 +504,16 @@ static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
 
     /* Build commands array */
     json_value_t *cmd_arr = json_new_array();
-    for (int i = 0; i < cmds.count; i++)
-        json_array_append(cmd_arr, json_new_string(cmds.cmds[i].command));
+    for (int i = 0; i < cmds.count; i++) {
+        json_value_t *val = json_new_string(cmds.cmds[i].command);
+        if (!val || json_array_append(cmd_arr, val) != 0) {
+            json_free(val);
+            json_free(cmd_arr);
+            fw_cmdlist_free(&cmds);
+            api_error(resp, 500, "Out of memory building command list");
+            return;
+        }
+    }
 
     /* Dump commands to string */
     char *dump = malloc(131072);
@@ -513,20 +521,32 @@ static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
         fw_cmdlist_dump(&cmds, dump, 131072);
     }
 
-    /* Capture current ruleset */
+    /* Capture current ruleset (iptables -S or nft list ruleset) */
     char current[65536] = {0};
     fw_ruleset_current(srv->config, current, sizeof(current));
 
-    /* Compute diff */
+    /* Compute diff using normalized command representations.
+       For iptables: strip "/sbin/iptables " prefix to match iptables -S output.
+       For nft: strip "/usr/sbin/nft " prefix for a cleaner comparison. */
     char *diff_buf = NULL;
     if (current[0]) {
+        const char *ipt_prefix = "/sbin/iptables ";
+        const char *nft_prefix = "/usr/sbin/nft ";
+        const char *strip = (srv->config->backend == BACKEND_IPT)
+                            ? ipt_prefix : nft_prefix;
+        size_t strip_len = strlen(strip);
+
         char *proposed = malloc(131072);
         if (proposed) {
             size_t poff = 0;
             proposed[0] = '\0';
             for (int i = 0; i < cmds.count; i++) {
+                const char *cmd = cmds.cmds[i].command;
+                /* Strip backend command prefix for normalized comparison */
+                if (strncmp(cmd, strip, strip_len) == 0)
+                    cmd += strip_len;
                 int n = snprintf(proposed + poff, 131072 - poff,
-                                 "%s\n", cmds.cmds[i].command);
+                                 "%s\n", cmd);
                 if (n > 0 && (size_t)n < 131072 - poff)
                     poff += (size_t)n;
             }

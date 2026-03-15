@@ -1,6 +1,7 @@
 #include "firewallo/diff.h"
 #include "firewallo/sysctl.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ── Capture current ruleset ──────────────────────────────────────── */
@@ -15,7 +16,7 @@ int fw_ruleset_current(const fw_config_t *cfg, char *buf, size_t len)
     if (cfg->backend == BACKEND_NFT)
         return fw_exec_capture("/usr/sbin/nft list ruleset 2>/dev/null", buf, len);
     else
-        return fw_exec_capture("/sbin/iptables-save 2>/dev/null", buf, len);
+        return fw_exec_capture("/sbin/iptables -S 2>/dev/null", buf, len);
 }
 
 /* ── Helper: check if a line exists in a set of lines ─────────────── */
@@ -83,12 +84,15 @@ int fw_ruleset_diff(const char *current, const char *proposed,
     /* Stack-allocate for small counts, heap for large */
     int used_stack[512];
     int *used = used_stack;
+    int used_heap = 0;
     if (prop_line_count > 512) {
-        /* For very large rulesets, zero out what we can */
-        prop_line_count = 512;
-        /* Truncate to avoid overflow — a reasonable limit */
+        used = calloc((size_t)prop_line_count, sizeof(int));
+        if (!used)
+            return -1;
+        used_heap = 1;
+    } else {
+        memset(used, 0, sizeof(int) * (size_t)prop_line_count);
     }
-    memset(used, 0, sizeof(int) * (size_t)prop_line_count);
 
     /* Pass 1: Lines in current — check if they exist in proposed */
     if (current && *current) {
@@ -132,6 +136,9 @@ int fw_ruleset_diff(const char *current, const char *proposed,
             p = eol + 1;
         }
     }
+
+    if (used_heap)
+        free(used);
 
     return 0;
 }

@@ -833,34 +833,60 @@ int cmd_preview(fw_config_t *cfg)
 
     printf("=== Proposed ruleset (%d commands) ===\n\n", cmds.count);
 
-    char dump[131072];
-    if (fw_cmdlist_dump(&cmds, dump, sizeof(dump)) >= 0)
-        printf("%s", dump);
+    /* Heap-allocate large buffers to avoid ~450KB stack usage */
+    enum { DUMP_SIZE = 131072, CURRENT_SIZE = 65536, DIFF_SIZE = 131072 };
+
+    char *dump = malloc(DUMP_SIZE);
+    if (dump) {
+        if (fw_cmdlist_dump(&cmds, dump, DUMP_SIZE) >= 0)
+            printf("%s", dump);
+        free(dump);
+    }
 
     /* Capture current ruleset and show diff */
-    char current[65536] = {0};
-    fw_ruleset_current(cfg, current, sizeof(current));
+    char *current = calloc(1, CURRENT_SIZE);
+    if (!current) {
+        fw_cmdlist_free(&cmds);
+        return 1;
+    }
+    fw_ruleset_current(cfg, current, CURRENT_SIZE);
 
     if (current[0]) {
-        /* Build proposed text: just the raw commands, one per line */
-        char proposed[131072] = {0};
-        size_t poff = 0;
-        for (int i = 0; i < cmds.count; i++) {
-            int n = snprintf(proposed + poff, sizeof(proposed) - poff,
-                             "%s\n", cmds.cmds[i].command);
-            if (n > 0 && (size_t)n < sizeof(proposed) - poff)
-                poff += (size_t)n;
-        }
+        /* Build proposed text: strip backend prefix for normalized comparison */
+        const char *ipt_prefix = "/sbin/iptables ";
+        const char *nft_prefix = "/usr/sbin/nft ";
+        const char *strip = (cfg->backend == BACKEND_IPT)
+                            ? ipt_prefix : nft_prefix;
+        size_t strip_len = strlen(strip);
 
-        char diff[131072] = {0};
-        if (fw_ruleset_diff(current, proposed, diff, sizeof(diff)) == 0 && diff[0]) {
-            printf("\n=== Diff (current vs proposed) ===\n\n");
-            printf("%s", diff);
+        char *proposed = calloc(1, DUMP_SIZE);
+        if (proposed) {
+            size_t poff = 0;
+            for (int i = 0; i < cmds.count; i++) {
+                const char *cmd = cmds.cmds[i].command;
+                if (strncmp(cmd, strip, strip_len) == 0)
+                    cmd += strip_len;
+                int n = snprintf(proposed + poff, DUMP_SIZE - poff,
+                                 "%s\n", cmd);
+                if (n > 0 && (size_t)n < DUMP_SIZE - poff)
+                    poff += (size_t)n;
+            }
+
+            char *diff = calloc(1, DIFF_SIZE);
+            if (diff) {
+                if (fw_ruleset_diff(current, proposed, diff, DIFF_SIZE) == 0 && diff[0]) {
+                    printf("\n=== Diff (current vs proposed) ===\n\n");
+                    printf("%s", diff);
+                }
+                free(diff);
+            }
+            free(proposed);
         }
     } else {
         printf("\n(No active ruleset detected — diff not available)\n");
     }
 
+    free(current);
     fw_cmdlist_free(&cmds);
     return 0;
 }
