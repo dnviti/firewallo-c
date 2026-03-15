@@ -12,6 +12,24 @@
 #include <poll.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/wait.h>
+
+/* ── Fork-per-connection constants ───────────────────────────────── */
+
+#define HTTPD_MAX_CHILDREN      16   /* Max concurrent child processes */
+#define HTTPD_READ_TIMEOUT_MS   2000 /* Per-read poll timeout (ms)     */
+#define HTTPD_CONN_TIMEOUT_SEC  10   /* Max total connection time (s)  */
+
+static volatile sig_atomic_t g_active_children = 0;
+
+static void sigchld_handler(int sig)
+{
+    (void)sig;
+    int saved_errno = errno;
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        g_active_children--;
+    errno = saved_errno;
+}
 
 /* ── Response helpers ──────────────────────────────────────────────── */
 
@@ -204,7 +222,7 @@ static void handle_connection(httpd_t *srv, int client_fd)
     /* Read request with poll timeout */
     struct pollfd pfd = {.fd = client_fd, .events = POLLIN};
     while ((size_t)total < sizeof(buf) - 1) {
-        int ready = poll(&pfd, 1, 5000); /* 5 second timeout */
+        int ready = poll(&pfd, 1, HTTPD_READ_TIMEOUT_MS);
         if (ready <= 0) break;
 
         ssize_t n = read(client_fd, buf + total, sizeof(buf) - 1 - (size_t)total);
@@ -311,12 +329,19 @@ int httpd_init(httpd_t *srv, const char *bind_addr, int port,
     return 0;
 }
 
-/* ── Server main loop ──────────────────────────────────────────────── */
+/* ── Server main loop (fork-per-connection) ───────────────────────── */
 
 int httpd_run(httpd_t *srv)
 {
     fw_log(LOG_INFO, "firewallo-web listening on %s:%d",
            srv->bind_addr ? srv->bind_addr : "0.0.0.0", srv->port);
+
+    /* Install SIGCHLD handler to reap child processes */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigchld_handler;
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, NULL);
 
     struct pollfd pfd = {.fd = srv->listen_fd, .events = POLLIN};
 
@@ -339,10 +364,47 @@ int httpd_run(httpd_t *srv)
             continue;
         }
 
-        handle_connection(srv, client_fd);
+        /* Reject new connections when at capacity */
+        if (g_active_children >= HTTPD_MAX_CHILDREN) {
+            fw_log(LOG_WARN, "Max children (%d) reached, rejecting connection",
+                   HTTPD_MAX_CHILDREN);
+            close(client_fd);
+            continue;
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror("fork");
+            close(client_fd);
+            continue;
+        }
+
+        if (pid == 0) {
+            /* ── Child process ────────────────────────────────── */
+            close(srv->listen_fd);
+
+            /* Hard limit on total connection time */
+            alarm(HTTPD_CONN_TIMEOUT_SEC);
+
+            handle_connection(srv, client_fd);
+            _exit(0);
+        }
+
+        /* ── Parent process ───────────────────────────────────── */
+        g_active_children++;
+        close(client_fd);
     }
 
     close(srv->listen_fd);
+
+    /* Wait for remaining children before exit */
+    while (g_active_children > 0) {
+        if (waitpid(-1, NULL, 0) > 0)
+            g_active_children--;
+        else
+            break;
+    }
+
     return 0;
 }
 
