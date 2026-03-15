@@ -4,6 +4,7 @@
 #include "firewallo/types.h"
 #include "firewallo/auth.h"
 #include <stddef.h>
+#include <limits.h>
 
 #define HTTP_MAX_HEADERS 2048
 #define HTTP_MAX_PATH    512
@@ -38,6 +39,7 @@ typedef struct {
     int port;
     const char *bind_addr;
     const char *webroot;
+    char real_webroot[PATH_MAX]; /* Canonicalized webroot (resolved once at init) */
     const char *config_path;
     fw_config_t *config;
     char api_token[AUTH_TOKEN_MAX]; /* loaded API token (empty = auth disabled) */

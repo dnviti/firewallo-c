@@ -301,6 +301,12 @@ int httpd_init(httpd_t *srv, const char *bind_addr, int port,
     srv->config = config;
     srv->running = 1;
 
+    /* Canonicalize webroot once at init to avoid per-request realpath() */
+    if (!realpath(webroot, srv->real_webroot)) {
+        perror("realpath(webroot)");
+        return -1;
+    }
+
     srv->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (srv->listen_fd < 0) {
         perror("socket");

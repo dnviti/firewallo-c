@@ -39,7 +39,7 @@ int router_dispatch(httpd_t *srv, const http_request_t *req, http_response_t *re
         return 0;
     }
 
-    if (static_serve_file(srv->webroot, req->path, resp) != 0) {
+    if (static_serve_file(srv->real_webroot, srv->webroot, req->path, resp) != 0) {
         resp->status = 404;
         fw_strlcpy(resp->status_text, "Not Found", sizeof(resp->status_text));
         fw_strlcpy(resp->content_type, "text/html; charset=utf-8", sizeof(resp->content_type));
