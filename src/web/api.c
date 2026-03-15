@@ -5,6 +5,7 @@
 #include "firewallo/sysctl.h"
 #include "firewallo/validate.h"
 #include "firewallo/util.h"
+#include "firewallo/diff.h"
 #include "firewallo/log.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -487,6 +488,76 @@ static void api_validate(httpd_t *srv, http_response_t *resp)
     api_ok_json(resp, data);
 }
 
+/* ── POST /api/v1/firewall/preview ─────────────────────────────────── */
+
+static void api_firewall_preview(httpd_t *srv, http_response_t *resp)
+{
+    char err[256] = {0};
+    if (fw_config_validate(srv->config, err, sizeof(err)) != 0) {
+        api_error(resp, 400, err);
+        return;
+    }
+
+    /* Compile proposed ruleset */
+    fw_cmdlist_t cmds;
+    fw_compile_start(srv->config, &cmds);
+
+    /* Build commands array */
+    json_value_t *cmd_arr = json_new_array();
+    for (int i = 0; i < cmds.count; i++)
+        json_array_append(cmd_arr, json_new_string(cmds.cmds[i].command));
+
+    /* Dump commands to string */
+    char *dump = malloc(131072);
+    if (dump) {
+        fw_cmdlist_dump(&cmds, dump, 131072);
+    }
+
+    /* Capture current ruleset */
+    char current[65536] = {0};
+    fw_ruleset_current(srv->config, current, sizeof(current));
+
+    /* Compute diff */
+    char *diff_buf = NULL;
+    if (current[0]) {
+        char *proposed = malloc(131072);
+        if (proposed) {
+            size_t poff = 0;
+            proposed[0] = '\0';
+            for (int i = 0; i < cmds.count; i++) {
+                int n = snprintf(proposed + poff, 131072 - poff,
+                                 "%s\n", cmds.cmds[i].command);
+                if (n > 0 && (size_t)n < 131072 - poff)
+                    poff += (size_t)n;
+            }
+
+            diff_buf = malloc(131072);
+            if (diff_buf) {
+                diff_buf[0] = '\0';
+                fw_ruleset_diff(current, proposed, diff_buf, 131072);
+            }
+            free(proposed);
+        }
+    }
+
+    /* Build response */
+    json_value_t *data = json_new_object();
+    json_object_set(data, "command_count", json_new_number(cmds.count));
+    json_object_set(data, "commands", cmd_arr);
+    if (dump)
+        json_object_set(data, "dump", json_new_string(dump));
+    if (diff_buf && diff_buf[0])
+        json_object_set(data, "diff", json_new_string(diff_buf));
+    else
+        json_object_set(data, "diff", json_new_string(""));
+
+    free(dump);
+    free(diff_buf);
+    fw_cmdlist_free(&cmds);
+
+    api_ok_json(resp, data);
+}
+
 /* ── Main API dispatcher ──────────────────────────────────────────── */
 
 int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
@@ -596,6 +667,10 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         }
         if (strcmp(sub, "rules") == 0 && strcmp(method, "GET") == 0) {
             api_firewall_rules(srv, resp);
+            return 0;
+        }
+        if (strcmp(sub, "preview") == 0 && strcmp(method, "POST") == 0) {
+            api_firewall_preview(srv, resp);
             return 0;
         }
         if (strcmp(method, "POST") == 0) {

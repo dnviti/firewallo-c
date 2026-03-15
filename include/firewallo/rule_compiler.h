@@ -27,6 +27,11 @@ int fw_cmdlist_append(fw_cmdlist_t *list, const char *fmt, ...)
    On failure, sets *fail_index to the index of the first failing command. */
 int fw_cmdlist_exec(const fw_cmdlist_t *list, int *fail_index);
 
+/* Serialize command list to a human-readable string.
+   Each command is written on its own line, prefixed with its index.
+   Returns the number of bytes written (excluding NUL), or -1 on error. */
+int fw_cmdlist_dump(const fw_cmdlist_t *list, char *buf, size_t buflen);
+
 /* Free the command list */
 void fw_cmdlist_free(fw_cmdlist_t *list);
 

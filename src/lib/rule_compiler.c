@@ -46,6 +46,30 @@ int fw_cmdlist_append(fw_cmdlist_t *list, const char *fmt, ...)
     return 0;
 }
 
+int fw_cmdlist_dump(const fw_cmdlist_t *list, char *buf, size_t buflen)
+{
+    if (!buf || buflen == 0)
+        return -1;
+
+    buf[0] = '\0';
+    size_t written = 0;
+
+    for (int i = 0; i < list->count; i++) {
+        int n = snprintf(buf + written, buflen - written,
+                         "[%03d] %s\n", i, list->cmds[i].command);
+        if (n < 0)
+            return -1;
+        if ((size_t)n >= buflen - written) {
+            /* Buffer full — truncate but still return what we have */
+            written = buflen - 1;
+            break;
+        }
+        written += (size_t)n;
+    }
+
+    return (int)written;
+}
+
 int fw_cmdlist_exec(const fw_cmdlist_t *list, int *fail_index)
 {
     for (int i = 0; i < list->count; i++) {

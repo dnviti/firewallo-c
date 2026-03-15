@@ -21,6 +21,7 @@ static void print_usage(void)
         "  reset           Flush all rules, set accept policy\n"
         "  status          Show firewall status\n"
         "  rules           Display active ruleset\n"
+        "  preview         Compile config and show commands + diff without executing\n"
         "  validate        Validate the configuration file\n"
         "  show-config     Pretty-print the JSON configuration\n"
         "  export          Export configuration backup\n"
@@ -142,6 +143,8 @@ int main(int argc, char *argv[])
         ret = cmd_status(&cfg);
     else if (strcmp(command, "rules") == 0)
         ret = cmd_rules(&cfg);
+    else if (strcmp(command, "preview") == 0)
+        ret = cmd_preview(&cfg);
     else if (strcmp(command, "validate") == 0)
         ret = cmd_validate(&cfg);
     else if (strcmp(command, "show-config") == 0)

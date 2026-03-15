@@ -7,6 +7,7 @@
 #include "firewallo/json.h"
 #include "firewallo/validate.h"
 #include "firewallo/util.h"
+#include "firewallo/diff.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -813,6 +814,54 @@ int cmd_set_nat(fw_config_t *cfg, const char *direction, const char *action,
 
     printf("NAT %srouting rule %s\n", direction,
            strcmp(action, "add") == 0 ? "added" : "removed");
+    return 0;
+}
+
+/* ── Preview ───────────────────────────────────────────────────────── */
+
+int cmd_preview(fw_config_t *cfg)
+{
+    char err[256] = {0};
+    if (fw_config_validate(cfg, err, sizeof(err)) != 0) {
+        print_err(_("config_invalid"), err);
+        return 1;
+    }
+
+    /* Compile proposed ruleset */
+    fw_cmdlist_t cmds;
+    fw_compile_start(cfg, &cmds);
+
+    printf("=== Proposed ruleset (%d commands) ===\n\n", cmds.count);
+
+    char dump[131072];
+    if (fw_cmdlist_dump(&cmds, dump, sizeof(dump)) >= 0)
+        printf("%s", dump);
+
+    /* Capture current ruleset and show diff */
+    char current[65536] = {0};
+    fw_ruleset_current(cfg, current, sizeof(current));
+
+    if (current[0]) {
+        /* Build proposed text: just the raw commands, one per line */
+        char proposed[131072] = {0};
+        size_t poff = 0;
+        for (int i = 0; i < cmds.count; i++) {
+            int n = snprintf(proposed + poff, sizeof(proposed) - poff,
+                             "%s\n", cmds.cmds[i].command);
+            if (n > 0 && (size_t)n < sizeof(proposed) - poff)
+                poff += (size_t)n;
+        }
+
+        char diff[131072] = {0};
+        if (fw_ruleset_diff(current, proposed, diff, sizeof(diff)) == 0 && diff[0]) {
+            printf("\n=== Diff (current vs proposed) ===\n\n");
+            printf("%s", diff);
+        }
+    } else {
+        printf("\n(No active ruleset detected — diff not available)\n");
+    }
+
+    fw_cmdlist_free(&cmds);
     return 0;
 }
 
