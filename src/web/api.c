@@ -13,12 +13,13 @@
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
+static const char API_ERR_FALLBACK[] = "{\"error\":true,\"message\":\"internal error\"}";
+
 static void api_error(http_response_t *resp, int status, const char *msg)
 {
     json_value_t *envelope = json_new_object();
     if (!envelope) {
-        http_response_set_json(resp, status,
-            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        http_response_set_json(resp, status, strdup(API_ERR_FALLBACK));
         return;
     }
 
@@ -29,15 +30,13 @@ static void api_error(http_response_t *resp, int status, const char *msg)
         json_free(err_val);
         json_free(msg_val);
         json_free(envelope);
-        http_response_set_json(resp, status,
-            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        http_response_set_json(resp, status, strdup(API_ERR_FALLBACK));
         return;
     }
     if (json_object_set(envelope, "message", msg_val) != 0) {
         json_free(msg_val);
         json_free(envelope);
-        http_response_set_json(resp, status,
-            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        http_response_set_json(resp, status, strdup(API_ERR_FALLBACK));
         return;
     }
 
@@ -45,8 +44,7 @@ static void api_error(http_response_t *resp, int status, const char *msg)
     json_free(envelope);
 
     if (!json) {
-        http_response_set_json(resp, status,
-            strdup("{\"error\":true,\"message\":\"internal error\"}"));
+        http_response_set_json(resp, status, strdup(API_ERR_FALLBACK));
         return;
     }
     http_response_set_json(resp, status, json);
