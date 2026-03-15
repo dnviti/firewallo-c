@@ -753,6 +753,11 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         return 0;
     }
 
+    /* /api/v1/monitor/... */
+    if ((sub = path_after(path, "monitor/")) != NULL) {
+        return api_handle_monitor(srv, req, resp, sub);
+    }
+
     api_error(resp, 404, "API endpoint not found");
     return 0;
 }
