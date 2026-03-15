@@ -177,6 +177,65 @@ typedef struct {
     char comment[FW_MAX_COMMENT];
 } fw_dpi_rule_t;
 
+/* VPN protocol types */
+typedef enum {
+    VPN_WIREGUARD = 0,
+    VPN_OPENVPN,
+    VPN_IPSEC
+} fw_vpn_proto_t;
+
+/* VPN mode */
+typedef enum {
+    VPN_MODE_SERVER = 0,
+    VPN_MODE_CLIENT,
+    VPN_MODE_SITE2SITE
+} fw_vpn_mode_t;
+
+#define FW_MAX_VPN_TUNNELS 16
+#define FW_MAX_VPN_PEERS   32
+#define FW_MAX_VPN_KEY     64
+#define FW_MAX_VPN_PATH   256
+
+/* VPN tunnel configuration */
+typedef struct {
+    char name[FW_MAX_IF_NAME];
+    fw_vpn_proto_t protocol;
+    fw_vpn_mode_t mode;
+    char listen_port[8];
+    char endpoint[FW_MAX_COMMENT];         /* remote host:port for client/s2s */
+    char local_network[FW_MAX_ADDR];       /* e.g. "10.0.0.0/24" */
+    char remote_network[FW_MAX_ADDR];      /* for site2site */
+    char interface[FW_MAX_IF_NAME];        /* linked system interface */
+    char comment[FW_MAX_COMMENT];
+    /* WireGuard */
+    char wg_private_key[FW_MAX_VPN_KEY];
+    char wg_public_key[FW_MAX_VPN_KEY];
+    char wg_preshared_key[FW_MAX_VPN_KEY];
+    /* OpenVPN */
+    char ovpn_ca_path[FW_MAX_VPN_PATH];
+    char ovpn_cert_path[FW_MAX_VPN_PATH];
+    char ovpn_key_path[FW_MAX_VPN_PATH];
+    char ovpn_dh_path[FW_MAX_VPN_PATH];
+    char ovpn_cipher[FW_MAX_IF_NAME];
+    /* IPSec */
+    char ipsec_auth_method[FW_MAX_IF_NAME]; /* "psk" or "cert" */
+    char ipsec_psk[FW_MAX_COMMENT];
+    char ipsec_local_id[FW_MAX_ADDR];
+    char ipsec_remote_id[FW_MAX_ADDR];
+} fw_vpn_tunnel_t;
+
+/* VPN peer (WireGuard) */
+typedef struct {
+    char name[FW_MAX_IF_NAME];
+    char tunnel[FW_MAX_IF_NAME];           /* parent tunnel name */
+    char public_key[FW_MAX_VPN_KEY];
+    char preshared_key[FW_MAX_VPN_KEY];
+    char allowed_ips[FW_MAX_COMMENT];
+    char endpoint[FW_MAX_COMMENT];
+    int  keepalive;
+    char comment[FW_MAX_COMMENT];
+} fw_vpn_peer_t;
+
 /* Webhook event types (bitmask) */
 typedef enum {
     WH_EVENT_CONFIG_CHANGE = 1,
@@ -271,6 +330,12 @@ typedef struct {
     /* Aliases (named address/port groups) */
     fw_alias_t aliases[FW_MAX_ALIASES];
     int alias_count;
+
+    /* VPN tunnels and peers */
+    fw_vpn_tunnel_t vpn_tunnels[FW_MAX_VPN_TUNNELS];
+    int vpn_tunnel_count;
+    fw_vpn_peer_t vpn_peers[FW_MAX_VPN_PEERS];
+    int vpn_peer_count;
 } fw_config_t;
 
 #endif /* FIREWALLO_TYPES_H */

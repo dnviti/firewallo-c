@@ -41,6 +41,16 @@ static void print_usage(void)
         "  set-nat <post|pre> <add|remove> <rule-json>\n"
         "  set-ratelimit <chain> <max> <period> <ban>\n"
         "\n"
+        "System info:\n"
+        "  interfaces      List system network interfaces with status\n"
+        "\n"
+        "VPN management:\n"
+        "  vpn-list             List all VPN tunnels with status\n"
+        "  vpn-status <name>    Show detailed tunnel status\n"
+        "  vpn-start <name>     Start a VPN tunnel\n"
+        "  vpn-stop <name>      Stop a VPN tunnel\n"
+        "  vpn-peers <tunnel>   List peers for a tunnel\n"
+        "\n"
         "Options:\n"
         "  -c, --config <path>  Config file (default: /etc/firewallo/firewallo.json)\n"
         "  -v, --verbose        Verbose output (show all commands)\n"
@@ -101,6 +111,10 @@ int main(int argc, char *argv[])
     }
 
     const char *command = argv[optind];
+
+    /* Commands that don't require config */
+    if (strcmp(command, "interfaces") == 0)
+        return cmd_list_system_interfaces();
 
     /* Load configuration */
     fw_config_t cfg;
@@ -236,7 +250,33 @@ int main(int argc, char *argv[])
                                 argv[optind + 3], argv[optind + 4], config_path);
     } else if (strcmp(command, "version") == 0)
         ret = cmd_version(&cfg);
-    else {
+    else if (strcmp(command, "vpn-list") == 0)
+        ret = cmd_vpn_list(&cfg);
+    else if (strcmp(command, "vpn-status") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-status <name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_status(&cfg, argv[optind + 1]);
+    } else if (strcmp(command, "vpn-start") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-start <name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_start(&cfg, argv[optind + 1]);
+    } else if (strcmp(command, "vpn-stop") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-stop <name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_stop(&cfg, argv[optind + 1]);
+    } else if (strcmp(command, "vpn-peers") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: firewallo vpn-peers <tunnel-name>\n");
+            return 1;
+        }
+        ret = cmd_vpn_peers(&cfg, argv[optind + 1]);
+    } else {
         fprintf(stderr, "Unknown command: %s\n\n", command);
         print_usage();
         ret = 1;
