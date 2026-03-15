@@ -573,11 +573,23 @@ int api_handle(httpd_t *srv, const http_request_t *req, http_response_t *resp)
         /* DELETE /api/v1/filter/{chain}/tcp/{port} */
         const char *port_str;
         if ((port_str = path_after(resource, "tcp/")) != NULL && strcmp(method, "DELETE") == 0) {
-            api_delete_port(srv, chain_name, atoi(port_str), 1, resp);
+            char *endptr;
+            long port_val = strtol(port_str, &endptr, 10);
+            if (*endptr != '\0' || endptr == port_str || port_val < 1 || port_val > 65535) {
+                api_error(resp, 400, "Invalid port number (must be 1-65535)");
+                return 0;
+            }
+            api_delete_port(srv, chain_name, (int)port_val, 1, resp);
             return 0;
         }
         if ((port_str = path_after(resource, "udp/")) != NULL && strcmp(method, "DELETE") == 0) {
-            api_delete_port(srv, chain_name, atoi(port_str), 0, resp);
+            char *endptr;
+            long port_val = strtol(port_str, &endptr, 10);
+            if (*endptr != '\0' || endptr == port_str || port_val < 1 || port_val > 65535) {
+                api_error(resp, 400, "Invalid port number (must be 1-65535)");
+                return 0;
+            }
+            api_delete_port(srv, chain_name, (int)port_val, 0, resp);
             return 0;
         }
     }
