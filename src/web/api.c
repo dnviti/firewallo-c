@@ -306,16 +306,9 @@ static void api_get_filter_chain(httpd_t *srv, const char *chain_name, http_resp
                      r->schedule.hour_end, r->schedule.minute_end);
             json_object_set(sched, "end", json_new_string(tbuf));
 
-            const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-            char days_str[64] = {0};
-            int first = 1;
-            for (int d = 0; d < 7; d++) {
-                if (r->schedule.days & (1 << d)) {
-                    if (!first) strncat(days_str, ",", sizeof(days_str) - strlen(days_str) - 1);
-                    strncat(days_str, day_names[d], sizeof(days_str) - strlen(days_str) - 1);
-                    first = 0;
-                }
-            }
+            static const char *day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+            char days_str[64];
+            fw_schedule_days_str(r->schedule.days, days_str, sizeof(days_str), day_names, ",");
             json_object_set(sched, "days", json_new_string(days_str));
             json_object_set(obj, "schedule", sched);
         }

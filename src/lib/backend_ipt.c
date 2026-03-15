@@ -1,5 +1,6 @@
 #include "firewallo/backend.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/util.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -246,16 +247,9 @@ static void ipt_add_filter_explicit_rule(fw_cmdlist_t *out, const char *chain,
                         rule->schedule.hour_end, rule->schedule.minute_end);
 
         /* Build weekdays list */
-        const char *day_abbr[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-        char days_buf[64] = {0};
-        int first = 1;
-        for (int d = 0; d < 7; d++) {
-            if (rule->schedule.days & (1 << d)) {
-                if (!first) strncat(days_buf, ",", sizeof(days_buf) - strlen(days_buf) - 1);
-                strncat(days_buf, day_abbr[d], sizeof(days_buf) - strlen(days_buf) - 1);
-                first = 0;
-            }
-        }
+        static const char *day_abbr[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+        char days_buf[64];
+        fw_schedule_days_str(rule->schedule.days, days_buf, sizeof(days_buf), day_abbr, ",");
         if (days_buf[0])
             pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
                             " --weekdays %s", days_buf);
@@ -296,16 +290,9 @@ static void ipt_add_filter_explicit_rule(fw_cmdlist_t *out, const char *chain,
                         rule->schedule.hour_start, rule->schedule.minute_start,
                         rule->schedule.hour_end, rule->schedule.minute_end);
 
-        const char *day_abbr2[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-        char days_buf2[64] = {0};
-        int first2 = 1;
-        for (int d = 0; d < 7; d++) {
-            if (rule->schedule.days & (1 << d)) {
-                if (!first2) strncat(days_buf2, ",", sizeof(days_buf2) - strlen(days_buf2) - 1);
-                strncat(days_buf2, day_abbr2[d], sizeof(days_buf2) - strlen(days_buf2) - 1);
-                first2 = 0;
-            }
-        }
+        static const char *day_abbr2[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+        char days_buf2[64];
+        fw_schedule_days_str(rule->schedule.days, days_buf2, sizeof(days_buf2), day_abbr2, ",");
         if (days_buf2[0])
             pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
                             " --weekdays %s", days_buf2);

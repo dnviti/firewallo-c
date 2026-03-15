@@ -1,5 +1,6 @@
 #include "firewallo/backend.h"
 #include "firewallo/rule_compiler.h"
+#include "firewallo/util.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -247,17 +248,10 @@ static void nft_add_filter_explicit_rule(fw_cmdlist_t *out, const char *chain,
                         rule->schedule.hour_end, rule->schedule.minute_end);
 
         /* Build day list for meta day */
-        const char *day_names[] = {"Monday", "Tuesday", "Wednesday", "Thursday",
-                                   "Friday", "Saturday", "Sunday"};
-        char days_buf[256] = {0};
-        int first = 1;
-        for (int d = 0; d < 7; d++) {
-            if (rule->schedule.days & (1 << d)) {
-                if (!first) strncat(days_buf, ",", sizeof(days_buf) - strlen(days_buf) - 1);
-                strncat(days_buf, day_names[d], sizeof(days_buf) - strlen(days_buf) - 1);
-                first = 0;
-            }
-        }
+        static const char *day_names[] = {"Monday", "Tuesday", "Wednesday", "Thursday",
+                                          "Friday", "Saturday", "Sunday"};
+        char days_buf[256];
+        fw_schedule_days_str(rule->schedule.days, days_buf, sizeof(days_buf), day_names, ", ");
         if (days_buf[0])
             pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
                             " meta day { %s }", days_buf);
