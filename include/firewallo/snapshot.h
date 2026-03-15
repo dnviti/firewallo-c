@@ -3,8 +3,11 @@
 
 #include <stddef.h>
 
-/* Maximum snapshots kept on disk */
+/* Maximum snapshots kept on disk (compile-time constant; override with
+ * -DFW_MAX_SNAPSHOTS=N at build time — not runtime configurable). */
+#ifndef FW_MAX_SNAPSHOTS
 #define FW_MAX_SNAPSHOTS 50
+#endif
 
 /* Default snapshot directory */
 #define FW_SNAPSHOT_DIR "/var/lib/firewallo/snapshots"

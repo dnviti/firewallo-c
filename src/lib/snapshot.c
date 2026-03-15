@@ -21,8 +21,10 @@ static const char *default_dir(const char *snapshot_dir)
 static int ensure_dir(const char *path)
 {
     struct stat st;
-    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
-        return 0;
+    if (stat(path, &st) == 0) {
+        /* Path exists — succeed only if it is a directory */
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
 
     /* Try to create parent first (one level up) */
     char parent[512];
@@ -33,7 +35,7 @@ static int ensure_dir(const char *path)
         ensure_dir(parent);
     }
 
-    if (mkdir(path, 0755) != 0 && errno != EEXIST)
+    if (mkdir(path, 0700) != 0 && errno != EEXIST)
         return -1;
     return 0;
 }
@@ -68,20 +70,65 @@ static void format_timestamp(char *buf, size_t buflen, const struct tm *tm)
              tm->tm_hour, tm->tm_min, tm->tm_sec);
 }
 
+/* Escape a metadata value: replace '\n' with "\\n" and '=' with "\\=" */
+static void escape_meta_value(char *dst, size_t dstlen, const char *src)
+{
+    size_t di = 0;
+    for (size_t si = 0; src[si] && di + 2 < dstlen; si++) {
+        if (src[si] == '\n') {
+            dst[di++] = '\\';
+            dst[di++] = 'n';
+        } else if (src[si] == '=') {
+            dst[di++] = '\\';
+            dst[di++] = '=';
+        } else if (src[si] == '\\') {
+            dst[di++] = '\\';
+            dst[di++] = '\\';
+        } else {
+            dst[di++] = src[si];
+        }
+    }
+    dst[di] = '\0';
+}
+
 /* Write metadata file (simple key=value format) */
 static int write_meta(const char *dir, const fw_snapshot_info_t *info)
 {
     char path[512];
     meta_path(path, sizeof(path), dir, info->id);
 
-    char buf[512];
-    int len = snprintf(buf, sizeof(buf),
-                       "id=%s\ndescription=%s\ncreated_at=%s\nsource=%s\n",
-                       info->id, info->description, info->created_at, info->source);
-    if (len < 0)
-        return -1;
+    /* Escape values to prevent newline/= corruption */
+    char esc_desc[512];
+    escape_meta_value(esc_desc, sizeof(esc_desc), info->description);
 
-    return fw_write_file(path, buf, (size_t)len);
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+             "id=%s\ndescription=%s\ncreated_at=%s\nsource=%s\n",
+             info->id, esc_desc, info->created_at, info->source);
+
+    return fw_write_file(path, buf, strlen(buf));
+}
+
+/* Unescape a metadata value: reverse of escape_meta_value */
+static void unescape_meta_value(char *dst, size_t dstlen, const char *src)
+{
+    size_t di = 0;
+    for (size_t si = 0; src[si] && di + 1 < dstlen; si++) {
+        if (src[si] == '\\' && src[si + 1]) {
+            si++;
+            if (src[si] == 'n')
+                dst[di++] = '\n';
+            else if (src[si] == '=')
+                dst[di++] = '=';
+            else if (src[si] == '\\')
+                dst[di++] = '\\';
+            else
+                dst[di++] = src[si];
+        } else {
+            dst[di++] = src[si];
+        }
+    }
+    dst[di] = '\0';
 }
 
 /* Read metadata file */
@@ -98,7 +145,7 @@ static int read_meta(const char *dir, const char *id, fw_snapshot_info_t *info)
     memset(info, 0, sizeof(*info));
     fw_strlcpy(info->id, id, sizeof(info->id));
 
-    /* Parse key=value lines */
+    /* Parse key=value lines (first unescaped '=' is the delimiter) */
     char *line = text;
     while (line && *line) {
         char *nl = strchr(line, '\n');
@@ -111,7 +158,7 @@ static int read_meta(const char *dir, const char *id, fw_snapshot_info_t *info)
             const char *val = eq + 1;
 
             if (strcmp(key, "description") == 0)
-                fw_strlcpy(info->description, val, sizeof(info->description));
+                unescape_meta_value(info->description, sizeof(info->description), val);
             else if (strcmp(key, "created_at") == 0)
                 fw_strlcpy(info->created_at, val, sizeof(info->created_at));
             else if (strcmp(key, "source") == 0)
@@ -176,12 +223,19 @@ int fw_snapshot_create(const char *snapshot_dir, const char *config_path,
         /* Append counter */
         char base_id[64];
         fw_strlcpy(base_id, info.id, sizeof(base_id));
+        int found_unique = 0;
         for (int n = 1; n < 100; n++) {
             snprintf(info.id, sizeof(info.id), "%.*s_%d",
                      (int)(sizeof(info.id) - 5), base_id, n);
             snapshot_path(snap_file, sizeof(snap_file), dir, info.id);
-            if (stat(snap_file, &st) != 0)
+            if (stat(snap_file, &st) != 0) {
+                found_unique = 1;
                 break;
+            }
+        }
+        if (!found_unique) {
+            free(cfg_data);
+            return -1; /* Exhausted all collision suffixes */
         }
     }
 
@@ -193,9 +247,11 @@ int fw_snapshot_create(const char *snapshot_dir, const char *config_path,
     }
     free(cfg_data);
 
-    /* Write metadata */
-    if (write_meta(dir, &info) != 0)
+    /* Write metadata — delete snapshot file on failure to avoid orphans */
+    if (write_meta(dir, &info) != 0) {
+        remove(snap_file);
         return -1;
+    }
 
     /* Auto-prune */
     fw_snapshot_prune(dir);
@@ -213,7 +269,7 @@ int fw_snapshot_list(const char *snapshot_dir,
 
     DIR *d = opendir(dir);
     if (!d)
-        return 0; /* No directory = no snapshots */
+        return (errno == ENOENT) ? 0 : -1;
 
     /* Collect .json file basenames (without extension) */
     char ids[FW_MAX_SNAPSHOTS][64];
@@ -381,9 +437,6 @@ int fw_snapshot_prune(const char *snapshot_dir)
 {
     const char *dir = default_dir(snapshot_dir);
 
-    /* List all snapshots */
-    fw_snapshot_info_t all[FW_MAX_SNAPSHOTS + 50]; /* extra room */
-
     DIR *d = opendir(dir);
     if (!d)
         return 0;
@@ -429,6 +482,5 @@ int fw_snapshot_prune(const char *snapshot_dir)
             pruned++;
     }
 
-    (void)all; /* suppress unused warning */
     return pruned;
 }

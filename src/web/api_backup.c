@@ -6,14 +6,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── Helpers (same pattern as api.c) ──────────────────────────────── */
 
 static void backup_error(http_response_t *resp, int status, const char *msg)
 {
-    char *buf = malloc(256);
-    snprintf(buf, 256, "{\"error\":true,\"message\":\"%s\"}", msg);
-    http_response_set_json(resp, status, buf);
+    json_value_t *envelope = json_new_object();
+    json_object_set(envelope, "error", json_new_bool(1));
+    json_object_set(envelope, "message", json_new_string(msg));
+    char *json = json_serialize(envelope, 0);
+    json_free(envelope);
+    http_response_set_json(resp, status, json);
 }
 
 static void backup_ok_json(http_response_t *resp, json_value_t *data)
@@ -73,34 +77,36 @@ static void api_create_snapshot(httpd_t *srv, const http_request_t *req,
     if (req->body && req->body_len > 0) {
         char err[256];
         json_value_t *body = json_parse(req->body, err, sizeof(err));
-        if (body) {
-            desc = json_string_value(json_object_get(body, "description"));
-            /* desc points into body tree; copy if needed */
-            char desc_buf[256] = {0};
-            if (desc)
-                fw_strlcpy(desc_buf, desc, sizeof(desc_buf));
-            json_free(body);
-
-            fw_snapshot_info_t info;
-            if (fw_snapshot_create(NULL, srv->config_path,
-                                   desc_buf[0] ? desc_buf : NULL,
-                                   "api", &info) != 0) {
-                backup_error(resp, 500, "Failed to create snapshot");
-                return;
-            }
-
-            json_value_t *data = json_new_object();
-            json_object_set(data, "id", json_new_string(info.id));
-            json_object_set(data, "description", json_new_string(info.description));
-            json_object_set(data, "created_at", json_new_string(info.created_at));
-            json_object_set(data, "source", json_new_string(info.source));
-            json_object_set(data, "message", json_new_string("Snapshot created"));
-            backup_ok_json(resp, data);
+        if (!body) {
+            backup_error(resp, 400, "Invalid JSON in request body");
             return;
         }
+        desc = json_string_value(json_object_get(body, "description"));
+        /* desc points into body tree; copy if needed */
+        char desc_buf[256] = {0};
+        if (desc)
+            fw_strlcpy(desc_buf, desc, sizeof(desc_buf));
+        json_free(body);
+
+        fw_snapshot_info_t info;
+        if (fw_snapshot_create(NULL, srv->config_path,
+                               desc_buf[0] ? desc_buf : NULL,
+                               "api", &info) != 0) {
+            backup_error(resp, 500, "Failed to create snapshot");
+            return;
+        }
+
+        json_value_t *data = json_new_object();
+        json_object_set(data, "id", json_new_string(info.id));
+        json_object_set(data, "description", json_new_string(info.description));
+        json_object_set(data, "created_at", json_new_string(info.created_at));
+        json_object_set(data, "source", json_new_string(info.source));
+        json_object_set(data, "message", json_new_string("Snapshot created"));
+        backup_ok_json(resp, data);
+        return;
     }
 
-    /* No body or invalid JSON — create without description */
+    /* No body — create without description */
     fw_snapshot_info_t info;
     if (fw_snapshot_create(NULL, srv->config_path, NULL, "api", &info) != 0) {
         backup_error(resp, 500, "Failed to create snapshot");
@@ -145,12 +151,7 @@ static void api_get_snapshot(const char *id, http_response_t *resp)
 static void api_restore_snapshot(httpd_t *srv, const char *id,
                                  http_response_t *resp)
 {
-    /* First, create a backup of the current config before restoring */
-    fw_snapshot_info_t backup_info;
-    fw_snapshot_create(NULL, srv->config_path,
-                       "Auto-backup before restore", "auto", &backup_info);
-
-    /* Load the snapshot */
+    /* Load the snapshot first — validate before creating auto-backup */
     size_t len;
     char *snap_data = fw_snapshot_load(NULL, id, &len);
     if (!snap_data) {
@@ -162,10 +163,19 @@ static void api_restore_snapshot(httpd_t *srv, const char *id,
     fw_config_t new_cfg;
     char err[256];
 
-    /* Write to temp, load and validate */
-    const char *tmp = "/tmp/.firewallo_restore.json";
+    /* Write to secure temp file, load and validate */
+    char tmp[] = "/tmp/.firewallo_restore_XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        free(snap_data);
+        backup_error(resp, 500, "Failed to create temp file");
+        return;
+    }
+    close(fd);
+
     if (fw_write_file(tmp, snap_data, len) != 0) {
         free(snap_data);
+        remove(tmp);
         backup_error(resp, 500, "Failed to write temp file");
         return;
     }
@@ -180,6 +190,15 @@ static void api_restore_snapshot(httpd_t *srv, const char *id,
 
     if (fw_config_validate(&new_cfg, err, sizeof(err)) != 0) {
         backup_error(resp, 400, err);
+        return;
+    }
+
+    /* Snapshot validated — now create auto-backup of current config */
+    fw_snapshot_info_t backup_info;
+    if (fw_snapshot_create(NULL, srv->config_path,
+                           "Auto-backup before restore", "auto",
+                           &backup_info) != 0) {
+        backup_error(resp, 500, "Failed to create auto-backup");
         return;
     }
 
@@ -198,6 +217,9 @@ static void api_restore_snapshot(httpd_t *srv, const char *id,
 }
 
 /* ── GET /api/v1/config/snapshots/{id}/diff — diff with current ───── */
+/* NOTE: Currently only supports comparing a snapshot against the active
+ * configuration.  Snapshot-vs-snapshot comparison (e.g. via a `compare=`
+ * query parameter) is not implemented yet. */
 
 static void api_diff_snapshot(httpd_t *srv, const char *id,
                               http_response_t *resp)
